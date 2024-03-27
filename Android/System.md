@@ -90,14 +90,53 @@ singleInstance：单一实例，每个 activity 都位于独立的栈中
 2.Application 在单进程应用中为单例，onCreate 只执行一次，在 LoadApk.makeApplication 中判断为空才会创建（由 AT.instrumentation.newApplication 实现）。
 # Service
 ## Launch
+一般通过 startService 来启动一个服务，多次调用只会走一次 onCreate（只创建一次），但 onStartCommmand（onStart 弃用了） 每次都会调用。  
+1.首先从一个 contextWrapper（context 代理，将调用委托给 contextImpl，也就是 mBase）的 startService 开始  
+2.调用 startServiceCommand，在此函数中会通信到 S 端，AMS.getService 获取一个 ActiveService 赋值给 mService，由此对象接着继续后续的 startService  
+3.通过 Binder 通信，由 Binder 对象 IapplicationThread 调用方法来创建 Service 并调用 onCreate  
+4.和 Activity 类似，发消息通知 H（handler），H.handleMessage，使用 classLoader 来创建 Service，若为运行在其他进程则会创建 Application  
+5.创建 contextImpl，调用 attach 建立链接，最终调用 onCreate 并将 service 对象放入 activityThread 维护的列表（其实是一个 arrayMap）当中，执行 onStartCommand 完成启动。
 ## Bind
+一般通过 bindService 来绑定一个服务  
+1.bindService 执行会走 onBind（多次 bind 只会调用一次），返回一个 Binder 对象，用于通信   
+2.类似 start，从一个 contextWrapper.bindService 开始，接着是 mBase.bindService  
+3.通过一个 serviceDispatcher 连接 serviceConnection 和 IServiceConnection（传递给 AMS，不是一对一的，context 和 serviceConnection 不同都会组成不同的 IServiceConnection）    
+4.通过维护的 arrayMap 来判断是否存在相同的 connection，若不存在则会创建一个新的 dispatcher（这个connection 是一对一的）并放入 map 中
+5.接着就会 IPC 到 AMS 端执行 bindService，交由 ApplicationThread 继续处理  
+6.还是使用 H.handleBindService 从返回的 token 当中获取 service 对象，调用 onBind，并返回 binder 对象给 C 端，并回调 serviceConnection.onServiceConnected，在这个回调中通知 AMS 来 publishSerice 通知 C 端连接完成。
+## Tips
+所有绑定的 C 端都解除了绑定，这个 service 才会被销毁
 ## Lifecycle
+onStartCommand  
+onBind（onReBind）  
+onUnbind   
+onDestroy
 # Broadcast
 ## foundation
+分为普通和有序广播，有序指的是上一个拦截广播在释放之后下一个才可以获取，会按照指定的优先级接收本地（当前应用或当前进程）和全局的广播
 ## Send
+1.还是从一个 CW 开始 sendBroadcast，接着 mBase 执行 sendBroadcast  
+2.向 AMS 发起请求，由 AMS 执行 broadcastIntent，找到广播接收者（满足 intentFilter），并将此接收者放入到广播列表等待被唤起（对此接收者调用 send）
 ### Registe
+分为 manifest 静态注册（PMS 初始化时自动注册）和代码动态注册（运行时）  
+1.四大组件都差不多，还是 CW 到 mBase 挨个调用  
+2.通过 LoadApk.Dispatcher 实现一个 IntentReceiver（Binder 对象），并向 AMS 发起请求，由 AMS 来真正注册，并存储 intentFilter 和 receiver
+广播需要及时 unRegiste
 ## Receive
+与 send 对应，上述提到的广播列表中轮到该接收者时，会经过 appilcationThread 处理，接着通过 LoadApk.receiverDispatcher 执行 performReceive，通过 H 来 post 消息，最终执行 onReceive
 # ContentProvider
 ## Registe
+需要在 manifest 中注册，一般都是单例，访问 CP 需要通过 AMS 实现（获取到的 CP 是一个 Binder 对象）   
+所在进程启动时将 CP 启动（在 application.onCreate 前执行 CP.onCreate），并发布到 AMS  
+1.既然是随应用进程启动，那么一定会走到应用的入口——AT.main，调用到 attach 后会执行 S 端 AMS.attachApplication，这一步才真正启动了 CP  
+2.通过 IPC 获取到 C 端的 applicationThread，并调用 bindApplication，通过 H 来 post 到主线程执行  
+3.AT 执行 handle 操作，绑定 mBase 以及 instrumentation，接着创建 application，执行 attachBaseContext  
+4.最终执行 CP 的 onCreate  
 ## ContentResolver
+IPC 中通过 contentResolver 获取另一进程的 contentProvider 提供的数据（C 端调用 call 方法，S 端需要重新此方法）
 ## foundation
+1.采用索引表的形式组织数据，会指定唯一提供者以及访问权限  
+2.底层是通过 binder 实现的，方法都运行在 binder 线程（如 call 方法）  
+3.数据更新类似广播机制，通用一个 contentObserver（也需要注册，通过 URI 描述，告知接收数据类型） 接收数据更新通知，由 provider 来发送通知，数据源由 SQLite 实现，数据也会被封装为 cursor  
+4.多线程操作，若针对内存则需要加锁实现同步，若底层为数据库数据则不需要，SQLite 会自己处理，但若是多个 SQLite 则还是需要自己处理同步    
+5.多进程操作会由请求队列按顺序执行  
