@@ -79,8 +79,37 @@ FLAG_WINDOW_IS_OBSCURED：是否被透明 View 遮挡
 FLAG_TAINTED：事件是否出现不一致  
 FLAG_TARGET_ACCESSIBILITY_FOCUS：事件是否需要先触发辅助功能 View
 # Scroll
+scrollTo：基于传入参数的绝对滑动  
+scrollBy：实际上也是调用了 scrollTo，基于当前位置的相对滑动  
+mScrollX = View 左边缘和 View 内容左边缘水平方向距离  
+mScrollY = View 上边缘和 View 内容上边缘水平方向距离  
+View 边缘为 View 的位置（四个顶点）  
+View 内容边缘为 View 内部的内容边缘  
+scrollTo/scrollBy 只改变 View 内容位置不改变 View 在布局中位置  
+也可以使用动画、改变位置参数等实现滑动，特殊的弹性滑动，可以通过Scroller（自定义）实现，需要配合 View 的 computeScroll（不断让 View 重绘，每次重绘进行小幅度滑动），根据时间流逝百分比计算 scrollX 和 scrollY 改变的百分比，并计算当前值（类似属性动画插值器）
 # ListView
+只支持竖直方向滑动，recyclerview 包含三种布局（线性、网格、瀑布）notifyDataSetChanged 实现全局刷新（也可以通过写 callback 实现某个 item 的刷新），recyclerview 可以 notifyItemChanged 局部刷新，不支持嵌套滑动（子 view 处理事件后父 view 不再参与，需要手动在事件传递时进行处理）只有两级缓存（ActiveViews：layout 开始时显示的 view，结束后,所有 ActiveViews 的 view 移到 ScrapViews；ScrapViews 中 view 可能被 adapter 重用）
 # RecyclerView
+替代 ListView 的产品，需要通过 Adapter 初始化列表重写 onCreateViewHolder 以及 onBindViewHolder，可指定 LayoutManager，如 GridLayoutManager，ListLayoutManager 等。  
+有独特的三级缓存机制，用户可主动加第四层缓存：  
+mScrapView：还未消失但将要消失   
+mCachedView：已经消失，默认大小为2用户指定缓存逻辑  
+RecyclePool：默认大小为5  
+采用差分刷新提高效率：DiffUtil 工具类实现，将新旧数据集传递给 Recyclerview，告知 adapter 哪些改变的数据需要刷新 view，可通过维护一个 list（AsyncListDiffer，异步操作的差分列表，构造传入两个参数，listupdatecallback（重写增删改方法）和 differconfig（重写 areItemsTheSame 和 areContentTheSame，并设置主、子线程 Executor）），向 Recyclerview 提交该列表刷新 view
 # Animator
+只改变显示位置，内部数据和事件不会改变（需要手动同步）  
+帧动画：播放图片，图片较多/较大容易OOM  
+属性动画：通过（时间）插值器和（类型）估值器来定义动画，通过 objectAnimator 的工厂方法获取对象（一般 ofFloat），调用 start 开启动画（ValueAnimator 为 objectAnimator 父类，动态计算目标对象属性的值并设置），可通过 AnimatorSet 实现多个动画的播放：AnimatorSet 调用 apply，内部去 play 以及统一执行 start（一次），动画过程可以通过 AnimatorUpdateListener 和 AnimatorListener 来监听，重写 start、end 等方法（属性必须具有 set 形式的 setter 函数，如 text 需要 setText）  
+插值器：根据时间流逝的百分比计算出当前属性值改变的百分比，自定义需要实现 TimeInterpolator 接口的 getInterpolation 方法  
+估值器：根据当前属性改变的百分比来计算改变后的属性值，自定义要重写 evaluate 方法（对应 ofObejct，其他都有默认 SDK 的插值器）  
+此外可以通过关键帧代替自定义，Keyframe 指定属性百分比时对象的属性值。
 # attribute
+px：pixel，像素，分辨率（density）描述为像素相乘  
+dp：density independent pixel，密度无关像素，为适配不同 dpi，定义 px = dp * （dpi / 160），即 160dpi 时的一个像素大小  
+dpi：dots per inch，每英寸像素数，像素密度  
+sw：屏幕宽度 / （dpi / 160）  
 # progress
+include:布局重用  
+merge:减少布局层级，与 include 配合，include 的布局和当前布局 layout 一致，当前可使用 merge  
+viewStub:不可见的没有大小的 View，按需加载，inflate 只调用一次，之后 viewStub 移除，替换为对应 layout（在 inflate 调用或 setVisibility 后执行）  
+自定义 view 一定要重写两个参数的构造函数：setContentView -> createView -> clazz.getConstructor(mConstructorSignature)，通过反射获取根节点 view，并获取构造方法，这里的 mConstructorSignature 为两个参数的数组
