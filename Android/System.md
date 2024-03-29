@@ -12,10 +12,23 @@ Window 是个抽象类，实现类为 PhoneWindow。Window 是分层级的：系
 Window 是一种概念，具体以 View 的形式存在（一般为 DecorView），通过 ViewRootImpl 与 View 联系，一个 Window 对应一个 ViewTree（控制 View 显示层级），Window 会拦截并分发事件给 View。
 ## WindowManager
 访问 Window 的入口，实现类为 WindowManagerImpl，WindowManagerImpl 又将具体实现委托给 WindowManagerGlobal（进程单例），通过 WM 访问 WMS 进行 add、remove、update 等操作，此过程为 IPC 过程。
+## ShellTransition
+### BlastSyncEngine
+### AnimCustom
+#### TransitionHandler
+#### TransitionObserver
+### WindowContainer
+### Transition
+### OverView
+## ​BlastBufferQueue
 # SurfaceFlinger
 ## foundation
 系统中只有一个实例，负责给 C 端分配窗口。
-他可以理解为是一个平面，即每个窗口是一个平面，每个平面对应一段内存，即所谓的屏幕缓冲区，缓冲区大小取决于窗口大小，即宽高（一般为宽*高）。
+他可以理解为是一个平面，即每个窗口是一个平面，每个平面对应一段内存，即所谓的屏幕缓冲区，缓冲区大小取决于窗口大小，即宽高（一般为宽*高）。  
+接受多个源（有显示界面）的数据缓冲（BufferQueue，DeQueue 取出 -> Queue 放回），进行合成（acquireBuffer 获取，releaseBuffer 放回）：  
+1.不会在应用每次提交缓冲区时都执行操作，在显示设备准备好接收新的缓冲区时（VSYNC 信号到达）才会唤醒，遍历层列表寻找新缓冲区。如果找到会获取该缓冲区，否则继续使用以前的缓冲区。  
+2.SurfaceFlinger 必须始终显示内容，会保留一个缓冲区，如果在某个层上没有提交缓冲区，则该层会被忽略。  
+3.在收集可见层的所有缓冲区后会询问 Hardware Composer 如何进行合成
 ## Simple Process
 1.APK 需要创建窗口时，会通过 WM.addView 创建一个 ViewRoot（ViewRootImpl） 对象，其中会通过 SF 无参构造函数创建 SF 对象，此时只是一个空壳（窗口需初始化后才对应一个屏幕显示的窗口，本质是给 SF 分配一段屏幕缓冲区的内存），需要向 WMS 请求（将空对象传给 WMS），返回一个完整对象。  
 2.WMS 收到请求后，通过 SF 的 JNI 调用到 SF_client 驱动，请求 SF 进程创建指定窗口，SF 创建一段屏幕缓冲区并关联该窗口，将地址返回给 WMS，WMS 通过此地址初始化 SF 对象 返回给 APK。  
