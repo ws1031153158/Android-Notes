@@ -43,7 +43,41 @@ UNSPECIFIED + wrap_content：UNSPECIFIED-0
 3.再通过 dispathDraw 将事件分发给子 view  
 4.最后绘制 view 的一些 decoration（如onDrawScrollBars）
 # Touch
+## onTouch
+View 有，ViewGroup 没有的回调，需要绑定监听 onTouchListener，优先级高于 onTouchEvent，在返回 false 的情况下才会走 onTouchEvent，view 只有这个和 dispatchTouchEvent
+## onTouchEvent
+处理 down 事件后，后续所有事件都由自身处理，若不处理则后续事件不会再走到这里，此外，若不处理 up 事件则此次事件会丢失
+## onDispatchTouchEvent
+返回 true 则说明自身处理事件，返回 false 会分发给上层 view 处理
+## onIntercepTouchEvent
+返回 true 为自身处理事件，false 则分发给子 view 处理，viewGroup 独有回调
+## process
+1.清空异常及已有状态，给所有之前选择的 Target 发送 Cancel 事件，确保之前 Target 能收到完整的事件周期；清除已有T arget，复位所有标志位（如 PFLAG_CANCEL_NEXT_UP_EVENT、FLAG_DISALLOW_INTERCEPT 等）  
+2.首先调用 activity 的 dispatchTouchEvent 分发（activity 只有这个和 onTouchEvent），从 window 分发到 viewGroup，调用 onInterceptTouchEvent 确定当前 ViewGroup 是否拦截 Down 事件，拦截则事件不会传递给子 View，调用 onTouchEvent 本身消费事件；不拦截则遍历所有子 View 寻找是否有子 View 需要消费该事件（调用子 view 的 dispatchTouchEvent）；若有子 View 需要消费该事件，则设定该事件的处理Target 为该子 View；若无子 View 需要消费该事件，则调用 super.dispatchEvent 判断该 ViewGroup 本身是否需要处理该事件  
+3.若事件处理 Target 不为空或该 ViewGroup 消费该事件，则返回 true；否则返回 false。返回值将决定该 ViewGroup 的上级 ViewGroup 是否需要继续询问其他子 View 是否需要消费该事件；对于处于顶层的 DecorView 来说，其返回值会决定包含该 DecorView 的 Activity 是否需要调用 Activity.onTouchEvent 进行处理。    
+4.对up、cancel、move 判断在 Down 事件的处理中是否找到可处理该事件的 Target，存在 Target，则调用 onInterceptTouchEvent 以确定当前 ViewGroup 是否拦截该事件，拦截直接调用 super.dispatchEvent 判断该 ViewGroup 本身是否需要消费事件；不拦截，传递该事件至所有已有 Target；不存在 Target，直接调用 super.dispatchEvent 判断该 ViewGroup 本身是否需要消费事件，若事件为 Up 或 Cancel，表明一个完整事件周期结束，则清除已有 Target，复位被置位的标志位（如 PFLAG_CANCEL_NEXT_UP_EVENT、FLAG_DISALLOW_INTERCEPT 等）
+## PointerDown
+支持多 Pointer(调用 setMotionEventSplittingEnabled 将 FLAG_SPLIT_MOTION_EVENTS 置位)的情况下，有新的 Pointer 按下时产生，会重新遍历 View 层级，寻找可以处理新 Pointer 事件的 Target，具体流程参考 Down 事件的分发逻辑；遍历结束若仍没有找到处理该事件的  Target，则会将新 Pointer 的处理权设置给已有 Target 中最早被添加的 Target。完成 Target 的寻找之后，会将该事件通过 dispatchTransformedTouchEvent 传递至所有已有 Target 进行处理
+## PointerUp
+相对于 Up 事件，当传递至所有已有 Target 结束之后不能标记以 Down 事件起始的整个事件周期结束，仅能标记其关联 Pointer（以 PointerDown 事件起始）的事件周期结束，不会清除所有状态，仅从已有 Target 中移除掉与该 Pointer 相关的部分。
 ## MotionEvent
+MotionEvent 作为 Touch 事件的载体，采用时间片管理 Touch 事件所有相关行为的数据。  
+纵向上，MotionEvent 在一段时间内多次采样合成为一个事件进行处理，每一次采样对应 Touch 数据，事件中就包含多份 Touch 数据，将最近采样数据作为当前数据，其他数据存储为历史数据(批量处理出于效率)。
+横向上，一个时间片对应特定时间点（可通过 getEventTime 获取）的采样数据数据，该采样点可能包含多个触摸点，MotionEvent 中采用 Pointer 标记每一个采样点，每一个 Pointer 的激活周期为从 Down 事件至 Up 或 Cancel 事件，激活周期内分配一个在不同 MotionEvent 中保持唯一的 PointerId，但是在不同 MotionEvent 中 Pointer 的排序会不断调整，因此 Pointer 在不同 MotionEvent 中对应的 PointerIndex 也会不断变化，根据 PointerId 可以找到该 Pointer 在某一 MotionEvent 中的 PointerIndex，根据 PointerIndex 则可以获取该 Pointer 在 MotionEvent 中相关 Touch 数据   
+rawX：相对于屏幕坐标系的原始X坐标，getRawX  
+rawY：相对于屏幕坐标系的原始Y坐标，getRawY  
+x：相对于事件处理主体坐标系的X坐标，getX(int index)  
+y：相对于事件处理主体坐标系的Y坐标，getY(int index)  
+size：按压区域大小，getSize(int index)  
+pressure：按压压力，getPressure(int index)  
+orientation：按压时屏幕方向，getOrientation(int index)  
+touchMajor：按压椭圆区域长边长，getTouchMajor(int index)  
+touchMinor：按压椭圆区域短边长，getTouchMinor(int index)  
+MotionEvent 将触发当前事件的 Pointe r作为主 Pointer，PointerIndex 为 0，MotionEvent 通过提供 getX() 这类不带 index 参数的接口方便的操作主 Pointer 数据。  
+MotionEvent 通过 getAction 接口获取事件 Action，Action 中低 8 位地址存储事件类型（包括 Down、Move、Up、Cancel、PointerDown、PointerUp），高 8 位地址存储 PointerId（当事件类型为 PointerDown、PointerUp 时）。  
+FLAG_WINDOW_IS_OBSCURED：是否被透明 View 遮挡  
+FLAG_TAINTED：事件是否出现不一致  
+FLAG_TARGET_ACCESSIBILITY_FOCUS：事件是否需要先触发辅助功能 View
 # Scroll
 # ListView
 # RecyclerView
