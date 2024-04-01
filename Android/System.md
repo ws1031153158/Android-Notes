@@ -14,11 +14,23 @@ Window 是一种概念，具体以 View 的形式存在（一般为 DecorView）
 访问 Window 的入口，实现类为 WindowManagerImpl，WindowManagerImpl 又将具体实现委托给 WindowManagerGlobal（进程单例），通过 WM 访问 WMS 进行 add、remove、update 等操作，此过程为 IPC 过程。
 ## ShellTransition
 ### BlastSyncEngine
+ST 的核心，是 WMS 维护的一个成员对象，每次窗口事务切换都围绕他进行  
+从 startSyncSet 开始，在这一步创建 SyncGroup 并返回 syncId，维护的 mActiveSync 列表将创建的 set 添加进去，接着将 window 添加到 syncSet（也就是 synGroup） 中，setReady 置好状态，通过 onSurfacePlacement 回调检查 window 是否已经 draw 完了（group.tryFinish），最后调用 finishNow 来提交这次的 transaction，后续由维护的监听 mListener 执行 onTransactionReady 回调到 Transition 中。
 ### AnimCustom
 #### TransitionHandler
+ST 通过此接口，定义 start/merge 方法等来自定义动画，其他应用进程想要定义窗口动画，需要注册一个 remoteTransitionHandler      
+创建 windowContainerTransaction 并设置参数，调用  startTransaction，这一步创建 activeTransition，并添加到 pendingTransitions 列表中，当 onTransitionReady 回调到来时，添加到 readyTransition 中（移除原来的 transition），接着执行 handler 的 startAnim 发起 ST 动画，最后指定需要定制动画的 transitionHandler。  
+非 shell 侧发起的 transition，可通过 addHandler 加入到 mHandlers 中待遍历时执行 startAnim。  
+TransitionInfo：transition 信息，是否处理 transition、执行动画是否依赖此 info，主要包括一些  window\action\flags 的 change 列表  
+requestStartTransition 时 mHandlers 中 handleRequest 返回非空 WCT 的 handler，onTransitionReady 时执行其 startAnim，重写 handleRequest 可以实现特定的 Transiton 处理  
+merege：1.若没有 handle 则在回调中直接执行 transition 2.有 handle 则在运行的 transition 中 merge 到来的 transition。   
+onTransitionConsumed：当 transition 停止或 merge 完成时执行一些清理工作
 #### TransitionObserver
+负责监听 ST 各个阶段（onTransitionReady 等）
 ### WindowContainer
+Task 等的基类，用于管理窗口配置，内部维护一个 SurfaceControl（mSurfaceControl），主要负责管理应用程序的窗口，包括窗口的生命周期（创建、销毁）、布局和渲染（调整窗口大小，位置和可见性）等
 ### Transition
+
 ### OverView
 ## ​BlastBufferQueue
 # SurfaceFlinger
