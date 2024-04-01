@@ -18,7 +18,7 @@ ST 的核心，是 WMS 维护的一个成员对象，每次窗口事务切换都
 从 startSyncSet 开始，在这一步创建 SyncGroup 并返回 syncId，维护的 mActiveSync 列表将创建的 set 添加进去，接着将 window 添加到 syncSet（也就是 synGroup） 中，setReady 置好状态，通过 onSurfacePlacement 回调检查 window 是否已经 draw 完了（group.tryFinish），最后调用 finishNow 来提交这次的 transaction，后续由维护的监听 mListener 执行 onTransactionReady 回调到 Transition 中。
 ### AnimCustom
 #### TransitionHandler
-ST 通过此接口，定义 start/merge 方法等来自定义动画，其他应用进程想要定义窗口动画，需要注册一个 remoteTransitionHandler      
+ST 通过此接口，定义 start/merge 方法（一般只关注 startAnimation 和 mergeAnimation）等来自定义动画，其他应用进程想要定义窗口动画，需要注册一个 remoteTransitionHandler      
 创建 windowContainerTransaction 并设置参数，调用  startTransaction，这一步创建 activeTransition，并添加到 pendingTransitions 列表中，当 onTransitionReady 回调到来时，添加到 readyTransition 中（移除原来的 transition），接着执行 handler 的 startAnim 发起 ST 动画，最后指定需要定制动画的 transitionHandler。  
 非 shell 侧发起的 transition，可通过 addHandler 加入到 mHandlers 中待遍历时执行 startAnim。  
 TransitionInfo：transition 信息，是否处理 transition、执行动画是否依赖此 info，主要包括一些  window\action\flags 的 change 列表  
@@ -30,9 +30,31 @@ onTransitionConsumed：当 transition 停止或 merge 完成时执行一些清�
 ### WindowContainer
 Task 等的基类，用于管理窗口配置，内部维护一个 SurfaceControl（mSurfaceControl），主要负责管理应用程序的窗口，包括窗口的生命周期（创建、销毁）、布局和渲染（调整窗口大小，位置和可见性）等
 ### Transition
-
+是动画 change 的集合，包含 window 的 open/close、bounds/mode 的改变、display 的 rotate/size/density 改变。  
+lifecycle：  
+1.Trigger：启动 task  
+2.Collecting：记录所有的 change，等待 C 端 接收 chane 并将匹配的每一帧数据和suface 的 change 绘制到同步的 transaction(为 invisible)  
+3.Playing:做动画到新的 state  
+4.Finished：内核做一些善后处理如  clean 操作以及将使用完毕的 leash 置为 invalide    
+Collect：  
+1.判断 mOpeningApps/mClosingApps  
+2.RootWindowContainer#checkAppTransitionReady，接着调用 AppTransitionController#handleAppTransitionReady，transitionGoodToGo/transitionGoodToGoForTaskFragments    
+3.WM change 触发 Transition(trigger) ，WM 判断此次操作为 start\pause\change 哪个 并 collect 参与的 containers(collecting)，随后等待所有的 container redraw(syncing)    
+4.Playing：SurfaceAnimationRunner#startAnimationshell 接收 onTransactionReady 回调过来的 message 随后做动画，动画结束后执行 finishTransition 告知内核  
+Finising：  
+1.一些 FinishCallback  
+2.内核在 finishTransition 中做一些 clean 工作
 ### OverView
+1.Shell 侧 TransitionPlayerImpl 实现 ITransitionPlayer 接口，初始化通过 registerTransitionPlayer 注册至 Core 侧 TransitionController 保存。  
+2.Transition 开始时 Core 侧通过 ITransitionPlayer.requestStartTransition 通知 Shell 侧（IRemoteTransition 实例也通过此接口参数传递），Shell 侧此方法通知各个 handler.handleRequest。    
+3.Shell 侧通过 startTransition 通知 Core 侧开始 Transition。  
+4.Core 侧 WM operations(Trigger 加上来自 startTransition 的 WCT) 完成后，BLASTSyncEngine 等待参与的窗口重绘（每次 applySurfaceChangedTransaction 后触发 onSurfacePlacement 检查），全部重绘完毕，BSE 收集所有 SyncTransaction 到 merged transaction，调用 onTransactionReady （完成动画准备工作：更新可见性、创建 transactionInfo 、startTransaction、finishTransaction等）通知 listener，Shell 侧 onTransactionReady 将 transaction 派发至对应 handler 执行动画，remoteTransition 场景动画是远端通过 IRemoteTransition 完成的。  
+5.动画完成后 Shell 侧通过 finishTransition 通知 core 同时 core 调用同名接口完成收尾（清理）
 ## ​BlastBufferQueue
+Buffer 申请在 APP 侧，dequeue，queue，acquire，release 操作均由 APP 进行，通过 Transaction 传递给 SF，减少 SF 压力。  
+界面不显示会释放 BlastBufferQueue 对象，减少内存。  
+将 buffer 和窗口信息更新同步，一次事务中可以传递 buffer 以及 对应的 layer 窗口大小等图层属性给 SF，同时可以将事务跨进程传递给系统服务，系统服务根据需要将窗口的几何修改融入到该事务一并提交，保证在同一帧生效，最后 
+relayoutWindow (从 WMS 申请 window layout， 创建 sc 并通过他创建 BBQ)，接着通过 JNI 接口创建 native 对象（创建 bufferQueue 并设置监听），最终创建 suface 对象。  
 # SurfaceFlinger
 ## foundation
 系统中只有一个实例，负责给 C 端分配窗口。
