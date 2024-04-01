@@ -18,19 +18,22 @@ ST 的核心，是 WMS 维护的一个成员对象，每次窗口事务切换都
 从 startSyncSet 开始，在这一步创建 SyncGroup 并返回 syncId，维护的 mActiveSync 列表将创建的 set 添加进去，接着将 window 添加到 syncSet（也就是 synGroup） 中，setReady 置好状态，通过 onSurfacePlacement 回调检查 window 是否已经 draw 完了（group.tryFinish），最后调用 finishNow 来提交这次的 transaction，后续由维护的监听 mListener 执行 onTransactionReady 回调到 Transition 中。
 ### AnimCustom
 #### TransitionHandler
-ST 通过此接口，定义 start/merge 方法（一般只关注 startAnimation 和 mergeAnimation）等来自定义动画，其他应用进程想要定义窗口动画，需要注册一个 remoteTransitionHandler      
+ST 通过此接口，定义 start/merge 方法（一般只关注 startAnimation 和 mergeAnimation）等来自定义动画，其他应用进程想要定义窗口动画，需要自己注册一个 remoteTransitionHandler（正常是在 Shell 侧的）       
 创建 windowContainerTransaction 并设置参数，调用  startTransaction，这一步创建 activeTransition，并添加到 pendingTransitions 列表中，当 onTransitionReady 回调到来时，添加到 readyTransition 中（移除原来的 transition），接着执行 handler 的 startAnim 发起 ST 动画，最后指定需要定制动画的 transitionHandler。  
-非 shell 侧发起的 transition，可通过 addHandler 加入到 mHandlers 中待遍历时执行 startAnim。  
+非 shell 侧发起的 transition，可通过 addHandler 加入到 mHandlers 中待遍历（active.mHandler 为 null 时 dispatchTransition 遍历）时执行 startAnimation。  
 TransitionInfo：transition 信息，是否处理 transition、执行动画是否依赖此 info，主要包括一些  window\action\flags 的 change 列表  
 requestStartTransition 时 mHandlers 中 handleRequest 返回非空 WCT 的 handler，onTransitionReady 时执行其 startAnim，重写 handleRequest 可以实现特定的 Transiton 处理  
-merege：1.若没有 handle 则在回调中直接执行 transition 2.有 handle 则在运行的 transition 中 merge 到来的 transition。   
+merege：  
+1.若没有 handle 住（activeTransiton 为 null）则在回调中直接执行 playTransition，通过 active.mHandler.startAnimation 回调到 remoteTransitionHandler 中，创建 IRemoteTransitionFinshiedCallback，通过 remote 执行 startAnimation 最终回调到应用进程实现的 remoteAnimationAdapterCompat 中，交由 IRemoteTransition.Stub 来处理 startAnimation。
+2. handle 住（activeTransition 不为 null）则直接调用 playing.mHandler.mergeAnimation，同样是回调到 remoteTransitionHandler 中，创建动画结束回调，通过 remote.mergeAnimation 最终回调到应用进程执行 mergeAnimation    
+3.应用侧动画结束会执行动画结束回调，call Merge/Main（是 merge 则先调用 mergeCall 再调用 mainCall），回调到 Shell 侧 onTransitionFinished，进一步到 Transitions 的 onMerged/onFinished，遍历 mMerged 列表，merge 所有的 mFinish、mStartTransition 并统一 apply，最终 finishTransition 回调到内核，执行 finishTransition。  
 onTransitionConsumed：当 transition 停止或 merge 完成时执行一些清理工作
 #### TransitionObserver
 负责监听 ST 各个阶段（onTransitionReady 等）
 ### WindowContainer
 Task 等的基类，用于管理窗口配置，内部维护一个 SurfaceControl（mSurfaceControl），主要负责管理应用程序的窗口，包括窗口的生命周期（创建、销毁）、布局和渲染（调整窗口大小，位置和可见性）等
 ### Transition
-是动画 change 的集合，包含 window 的 open/close、bounds/mode 的改变、display 的 rotate/size/density 改变。  
+是动画 change 的集合，包含 window 的 open/close、bounds/mode 的改变、display 的 rotate/size/density 改变，BSE 的回调会调到此处的 onTransitionReady，这里会从内核回调到 Shell 侧 TransitionPlayerImpl 的 onTransitionReady。  
 lifecycle：  
 1.Trigger：启动 task  
 2.Collecting：记录所有的 change，等待 C 端 接收 chane 并将匹配的每一帧数据和suface 的 change 绘制到同步的 transaction(为 invisible)  
