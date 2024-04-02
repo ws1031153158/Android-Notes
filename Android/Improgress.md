@@ -33,7 +33,11 @@ SWAP PSS：释放后其他进程可以使用的内存，所以只能看到 Dirty
 Native Heap：PSS + SWAP PSS DIRETY  
 详细内存分布 -> APP 内存（图片、java堆、）-> 总内存 -> 对象内存（view、activity、viewimpl，可当做内存泄漏的依据）  
 # ANR
+主线程 sleep 不一定 ANR，休眠期间没有其他消息需要处理则不会，若此时有点击事件或其他线程传来的更新 UI 请求则可能会 ANR  
 # Runtime Crach
+app 不会闪退，但进程被杀掉，不会接受任何事件，可以通过 getDefaultUncaughtExceptionHandler 交给系统处理（如捕获到异常为空）。  
+try-catch 可以捕获主线程异常。 ，UncaughtExceptionHandler 可以捕获子线程异常，异常发生回调 uncaughtException，捕获到的异常为 Throwable。  
+自定义 crashHandler 继承 Thread.UncaughtExceptionHandler，初始化进行，Thread.setDefaultUncaughtExceptionHandler(this) 操作，在 unCaughtException 回调中处理上报异常（有可能此时已未响应，需要创建 looper）。
 ## Native Crash
 # System trace
 ## MainThread/RenderThread
