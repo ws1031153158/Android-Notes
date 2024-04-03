@@ -39,10 +39,48 @@ app 不会闪退，但进程被杀掉，不会接受任何事件，可以通过 
 try-catch 可以捕获主线程异常。 ，UncaughtExceptionHandler 可以捕获子线程异常，异常发生回调 uncaughtException，捕获到的异常为 Throwable。  
 自定义 crashHandler 继承 Thread.UncaughtExceptionHandler，初始化进行，Thread.setDefaultUncaughtExceptionHandler(this) 操作，在 unCaughtException 回调中处理上报异常（有可能此时已未响应，需要创建 looper）。
 ## Native Crash
+原生采用信号（软中断信号）量中断处理的捕捉方式，程序运行在用户态，系统调用、中断或异常时进入内核态，信号涉及两种状态转换。  
+接收：接收信号由内核代理，收到信号会放到对应进程信号队列中，向进程发送一个中断，使其进入内核态。（此时信号只在队列中，对进程来说暂时不知道信号到来）。  
+检测：进程进入内核态有两种场景对信号检测：    
+1.从内核态返回用户态前进行检测。  
+2.在内核态中，从睡眠状态被唤醒时进行检测。    
+有新信号时进入信号处理：处理运行在用户态，处理前，内核将当前栈内数据拷贝到用户栈，修改指令寄存器（eip）并指向信号处理函数，之后返回用户态，执行对应处理函数，处理完成后返回内核态，检查是否有信号未处理。所有信号处理完成，恢复内核栈（用户栈拷贝回来），恢复指令寄存器（eip）并指向中断前的运行位置，最后回到用户态继续执行进程。
 # System trace
 ## MainThread/RenderThread
+一帧流程（60fps | 16.6ms）：  
+1.主线程接到 Vsync 信号（一个 Message 来唤醒），Choreographe r回调 onVsync 开始一帧的绘制  
+2.处理 Input 事件  
+3.处理 Animation 回调  
+4.处理 Traversal 回调  
+5.Main 和 Render 进行 Sync，主线程结束绘制，可以进行下一个 Message 及 Idle，或等下一次 Vsync  
+6.Render 从 BufferQueue 取出 Buffer（DequeueBuffer），进行真正的渲染（主线程的 draw 没有执行 drawCall，是将内容记录到 DisplayList（RednerNode）中，同步到 RenderThread）  
+7.Render 将完成的 Buffer 返还给 BufferQueue，等 Vsync-SF 交由 SF 合成  
+tips：renderThread 对应硬件加速（默认开启），开启硬件加速后会初始化 renderThread，使用 GPU 来渲染。
 ## Input
+1.触摸屏每隔几毫秒扫描一次，如果有触摸事件，则将事件上报到对应驱动  
+2.InputReader 从 EventHub 读取触摸事件放到 InboundQueue  
+3.InputDispatcher 从 InboundQueue 中将触摸事件包装分发给注册了 Input 事件的 App 的 OutBoundQueue，同时将事件记录到各个 App(连接) 的 WaitQueue（两者为 SystemServer 中的 Native线程）  
+4.App 拿到事件，记录到 PendingInputEventQueue，进行 Input 事件分发，若此分发过程中，App 的 UI 发生变化，则请求 Vsync 进行一帧的绘制  
+5.App 处理完成，回调 InputManagerService 将负责监听的 WaitQueue 中对应 Input 移除
 ## Vsync
+从左到右边，从上到下逐行扫描像素点，在屏幕刷新频率（帧率，fps，GPU一秒绘制的帧数）固定时，一个屏幕内数据来自 2 个不同帧（buffer 在显示过程中被修改），画面会出现撕裂，垂直同步就是为了解决此问题。  
+双缓存：绘制和显示器拥有各自  buffer，GPU 始终将完成一帧写入 Back Buffer，显示器使用 Frame Buffer，屏幕刷新时，Frame Buffer 不变，Back buffer 就绪后进行交换  
+三缓存：双缓冲基础上增加一个 Graphic Buffer，CPU 空闲时，Back Buffer 被占用，只能等待 GPU 后再写入，此时第三缓存提前准备好数据。  
+扫描完屏幕后，需要重新回到第一行进入下次循环，此时有一段时间空隙（VBI），进行缓存交换，Vsync 利用 VBI 出现的垂直同步脉冲来保证交换时间。
 ### offset
+为 0， App 和 SurfaceFlinger 同时收到 Vsync 信号。  
+不为 0，App 先收到 Vsync 信号，进行一帧渲染，然 Offset 后，SurfaceFlinger 收到 Vsync 信号开始合成，这时如果 App 的 Buffer 已经 Ready ，那 SurfaceFlinger 这一次合成就可以包含 App 这一帧，用户也会早一点看到。
 ## ​Choreographer
+配合 Vsync ，给上层 App 渲染提供稳定的 Message 处理时机： Vsync 到来，系统对 Vsync 信号周期调整，控制每一帧绘制操作时机，Vsync 信号唤醒 Choreographer 来做 App 的绘制操作（通过 postCallback 设置的回调函数调用使用者）。  
+承上：接收和处理 App 的更新消息和回调，等 Vsync 到来统一处理。如集中处理 Input 、Animation、Traversal( measure、layout、draw ) ，判断卡顿掉帧情况，记录 CallBack 耗时等  
+启下：接收 Vsync 事件回调，请求 Vsync 信号  
+线程单例要和一个 Looper 绑定（内部有一个 Handler 所以需要绑定 Looper ），定义了一个 FrameCallback interface，当 Vsync 到来，doFrame 被调用，在固定的时间中断。
 ## CPU
+1.C0 状态（激活）  
+最大工作状态，可以接收指令和处理数据  。  
+2.C1 状态（挂起）  
+可以通过执行汇编指令“ HLT ”进入，唤醒时间快（只需 10 ns），节省 70% 的 CPU 功耗  。  
+3.C2 状态（停止允许）  
+处理器时钟频率和 I/O 缓冲被停止(执行引擎和 I/0 缓冲已经没有时钟频率)，可节约 70%  CPU 和平台能耗，从 C2 切到 C0 需要 100 ns以上。  
+4.C3 状态（深度睡眠）  
+总线频率和 PLL 均被锁定，在多核心系统下，缓存无效，在单核心系统下，内存被关闭，但缓存仍有效。可节省 70%  CPU 功耗，平台功耗比 C2 状态大，唤醒时间需要 50 ns  
