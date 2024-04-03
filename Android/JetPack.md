@@ -34,8 +34,7 @@ dataBinding：
 1.包含了 viewBinding 功能  
 2.支持 data 和 view 双向绑定  
 3.效率低  
-4.需要添加 layout属性（viewBinding 不用）  
-xml 多了一个 <data/> 标签，填写布局文件需要引用的类或变量。  
+4.需要添加 layout属性（viewBinding 不用），xml 多了一个 <data/> 标签，填写布局文件需要引用的类或变量。  
 DataBidingUtil.setContentView：首先是 activity.setContentView，activity 获取 window，window 再获取 decorView，最后通过 decorView 获取到 viewGroup，最终执行 bindToAddedViews（遍历获取 view 数组对象，通过数据绑定 library 生成对应 binding 类）。  
 bind：在父类（viewBinding）创建回调或 handler，通过 mapBinding 遍历布局获取 includes、ID Views 的数组对象并赋给对应 view 最终创建 runnnable 执行动态绑定。  
 设置变量：bean 对象通过一个 mDirtyFlags 标识变量，通过 notifyPropertyChanged 通知更新（调用到设置的回调，通知对象属性变化，转给生成的 binding 类处理（判断是否需要重新绑定并执行）），调用 requestRebind 重新绑定，将数据更新到 view，observable 对象注册一个对象的监听（保存在 local 数组中，addOnPropertyChangedCallback 将监听绑定到对象上（会创建通知 obervable 重新绑定更新的回调并添加到回调列表）） ，后续和 bean 对象相同，此外，observableFields 对象的监听在 executeBindings（上述 runnable 中的最后一步（真正绑定的方法））注册。  
@@ -56,20 +55,33 @@ DAO(Data Access Object)：数据库访问者，提供增删改查接口，运行
 ## Foundation
 编译期通过 kapt 处理 @Dao 和 @Database 注解，生成 DAO 和 Database 实现类(XXX_impl)。  
 database_impl：  
-createOpenHelper： Room.databaseBuilder().build()创建Database调用impl.createOpenHelper创建SupportSQLiteOpenHelper(创建DB以及管理版本)
-createInvalidationTracker ：创建跟踪器，确保table记录修改时通知到相关回调方
-clearAllTables：清空table实现
-xxxDao：创建xxx_impl
-xxxDao_impl：
-__db：RoomDatabase实例
-__insertionAdapterOfUser ：EntityInsertionAdapterd实例，用于数据insert
-__deletionAdapterOfUser：EntityDeletionOrUpdateAdapter实例，用于数据update/delete
-Builder：
-createFromAsset()/createFromFile() ：从SD卡或Asset的db文件创建RoomDatabase实例
-addMigrations() ：添加数据库迁移（migration），数据库升级需要
-allowMainThreadQueries() ：允许在UI线程进行数据库查询，默认不允许
-fallbackToDestructiveMigration() ：找不到migration则重建数据库表（会造成数据丢失）
-调用build后，创建xxxDatabase_Impl，并调用init，内部调用createOpenHelper
+1.createOpenHelper：通过 Room.databaseBuilder.build 创建 Database，接着调用 impl.createOpenHelper 创建 SupportSQLiteOpenHelper(创建 DB 以及管理版本)。  
+2.createInvalidationTracker ：创建跟踪器，确保 table 记录修改时通知到相关回调方。  
+3.clearAllTables：清空 table 实现    
+4.xxxDao：创建 xxx_impl   
+5.xxxDao_impl：  
+1.__db：RoomDatabase 实例  
+2.__insertionAdapterOfUser ：EntityInsertionAdapterd 实例，用于数据 insert  
+3.__deletionAdapterOfUser：EntityDeletionOrUpdateAdapter 实例，用于数据 update/delete  
+Builder：  
+1.createFromAsset/createFromFile ：从 SD 卡或 Asset 的 db 文件创建 RoomDatabase 实例  
+2.addMigrations() ：添加数据库迁移（migration），数据库升级需要  
+3.allowMainThreadQueries() ：允许在UI线程进行数据库查询，默认不允许  
+4.fallbackToDestructiveMigration() ：找不到 migration 则重建数据库表（会造成数据丢失）  
+5.调用 build 后，创建 xxxDatabase_Impl，并调用 init，内部调用 createOpenHelper  
 ## Update
+1.数据库表结构变化时，需要通过数据库迁移（Migrations）升级表结构，避免数据丢失    
+2.迁移需要使用 Migration 类，Migration(int,int)，重写 migrate 方法，执行 db.execSQL    
+3.Migration 通过 startVersion 和 endVersion 表明当前是哪个版本间的迁移，运行时按照版本顺序调用各 Migration，迁移到新 Version    
+4.迁移找不到对应版 Migration，会抛出 IllegalStateException，添加降级处理，避免 crash（.fallbackToDestructiveMigration）  
+fallbackToDestructiveMigration：重建数据库表  
+fallbackToDestructiveMigrationFrom：基于某版本重建数据库表  
+fallbackToDestructiveMigrationOnDowngrade：数据库表降级到上一个正常版本  
 ## Compatible
+LiveData：DAO 可定义 LiveData 类型结果，Room 内部兼容 LiveData 响应式逻辑，通常 Query 需要命令式获取结果，LiveData 让更新可被观察，DB 数据发生变化时，Room 会更新 LiveData，将查询语句作为局部变量，RoomSQLitQuery.acquire 来获取数据，返调用 db.getInvalidationTracker.createLiveData（接受3个参数：tableNames：被观察的表；inTransaction：查询是否基于事务；computeFunction 记录变化时的回调），重写 call 方法（执行真正的 sql 查询，Observer 首次订阅 LiveData，或表数据发生变化时执行），以及 finalize 方法（进行 release 操作）。  
+RxJava：DAO 返回值可以是 RxJava2 的各种类型，注解 @Query 可请求 Flowable/Observable 类型、注解 @Insert/@Update/@Delete 设置属性 Completable/Single/Maybe，使用 fromCallable 创建 Completable 与 Single；RxRoom.createFlowable 创建 Flowable，call 方法执行真正的 sql 操作。    
+Coroutine：CURD 方法定义为 suspend，CoroutinesRoom.execute 执行真正的 sql 语句，通过 Continuation 将 callback 变为 Coroutine 的同步调用。
 # Navigation
+单 Activity 架构成为可能，无需关心具体的 fragment 跳转逻辑，但虽然在 onCreateView 中创建 FrameLayout，真正的容器却是 FrameLayout。创建 Fragment 时内部使用的是 replace，不是 show 和 hide，导致 fragment 每次生命周期都会重新执行，可以和 viewModel 配合使用。此外，需要在跟目录中注册，在各个 fragment 中编写 action，指定跳转路由（destination/popUpTo），在根节点声明 startDestination，fragment 可定义 argument，在跳转时传递参数，指定 name 为 NavHostFragment 的 fragment 为导航容器。defaultNavHost 为 true 时需要在 activity 重写 onSupportNavigateUp（默认 back 事件不会回退 fragment）。  
+通过 Navigation.findNavcontroller(fragment).navigate/Up(action) 实现导航或点击逻辑，传统传递 bundle 来在 fragment 之间传递参数，在 navigate 方法中添加 arg 参数，但需要定义多个 name 容易混淆。  
+谷歌提供了 safeArgs 方式，为 fragment 提供 directions 文件（用于传参），有 argument 标签的自动生成 Args 文件（用于取参）。
