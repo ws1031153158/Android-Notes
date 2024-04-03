@@ -46,8 +46,30 @@ AndroidX 库所有，用于替代后台 Service（特定时间执行后台任务
 # Compose
 避免布局嵌套多次测量问题，引入固有特性测量（Intrinsic），允许父对子测量前，先测子的固有尺寸（先对整个 viewTree 进行固有特性测量，在对整体进行正常测量），将命令式编程变为声明式编程。  
 # Room
-
+可返回 Coroutine、RxJava 等库类型结果。  
+Database：数据库入口，继承 RoomDatabase，提供获取 DAO 抽象方法，关联 table 对应 entities，使用注解 @Database(entities,version) 来标识。  
+Entity：一个实体代表一个表，属性对应表中 column，必须为 public 或有 get/set 方法，至少一个主键（@PrimaryKey 单个主键），使用注解 @Entity(primaryKeys)来标识，（autoGenerate 自动生成），tableName 指定表名，indices 指定索引，unique 设为唯一索引，注解 @Ignore 标识不持久化进数据库。  
+DAO(Data Access Object)：数据库访问者，提供增删改查接口，运行在调用线程，需要做异步处理，注解 @Embeded 标识将属性内嵌到 Entity，相当于包含了多个 Entity 属性。  
+一对一：主表（Parent Entity）每条记录与从表（Child Entity）一一对应，此外，foreignkeys 作为注解 @Relation 的属性来定义外键约束。外键只能在从表，从表需要有字段对应到主表主键。通过外键约束（delete/update发出此约束属性），对主表操作受从表影响。（如主表（外键来源表）删除对应记录，先检查该记录是否有对应外键，有则不可删除），注解 @Relation 定义主从关系，parent 为主表主键，entity 为从表外键约束。  
+一对多：主表一条记录对应从表中零到多个。    
+多对多：主表一条记录对应从表中零到多个，此外，若没有明确的外键约束关系，则需要定义一个 associative entity（交叉连接表），分别建立外键约束，交叉结果为笛卡尔积（两表记录和）。 
 ## Foundation
+编译期通过 kapt 处理 @Dao 和 @Database 注解，生成 DAO 和 Database 实现类(XXX_impl)。  
+database_impl：  
+createOpenHelper： Room.databaseBuilder().build()创建Database调用impl.createOpenHelper创建SupportSQLiteOpenHelper(创建DB以及管理版本)
+createInvalidationTracker ：创建跟踪器，确保table记录修改时通知到相关回调方
+clearAllTables：清空table实现
+xxxDao：创建xxx_impl
+xxxDao_impl：
+__db：RoomDatabase实例
+__insertionAdapterOfUser ：EntityInsertionAdapterd实例，用于数据insert
+__deletionAdapterOfUser：EntityDeletionOrUpdateAdapter实例，用于数据update/delete
+Builder：
+createFromAsset()/createFromFile() ：从SD卡或Asset的db文件创建RoomDatabase实例
+addMigrations() ：添加数据库迁移（migration），数据库升级需要
+allowMainThreadQueries() ：允许在UI线程进行数据库查询，默认不允许
+fallbackToDestructiveMigration() ：找不到migration则重建数据库表（会造成数据丢失）
+调用build后，创建xxxDatabase_Impl，并调用init，内部调用createOpenHelper
 ## Update
 ## Compatible
 # Navigation
