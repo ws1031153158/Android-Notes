@@ -6,3 +6,11 @@
 3.使用枚举加锁操作  
 4.调用静态方法 valueOf  
 5.定义可以外部访问的方法  
+# Annotation
+# 泛型
+## Class
+## 类型擦除
+## Problem
+# 内存溢出-OOM/内存泄露
+## Class
+## Resolve
