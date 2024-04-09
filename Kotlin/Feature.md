@@ -32,7 +32,37 @@ equals；hashCode；toString；copy；componentN，kotlin特有解构声明，�
 object：修饰的类为静态类，方法和变量均为静态，可声明静态内部类  
 componion object：伴生对象，类中只存在一个，类似 java 静态方法、静态成员，调用的也必须是静态成员
 # Coroutine
-
+通过编译技术实现，不依赖任何 os/vm，编译时 suspend 函数传入 Continuation 接口，持有 context 和一个 resumeWith 作为参数，其中 resumeWith 会调用 invokeSuspend 协程启动或挂起时恢复，协程运行完成回调。这些代表之后要执行的方法，	编译器将协程体编译成匿名内部类，挂起函数调用位置对应挂起点，	类中实现 create 来创建协程体类实例，使用状态机，维护一个 label，控制 invokeSuspend 方法执行不同条件分支，挂起函数调用分布在不同分支，挂起函数传参为 this，即协程体自身。    
+线程会占用内存，且切换开销较大，线程的切换是在内核态下完成的，所以用户态中发起线程的切换会中断，进入内核态，所以需要内核的支持，用户级的线程切换时，才需要内核的支持，用户态和内核态其实就是CPU指令集权限级别的区别，用户态相当于应用程序，内核态相当于操作系统，多个协程可以共用一个线程，切换位于用户态。  
+是一种通过挂起机制实现可中断的方法，通过栈实现层级调用
+.launch(Dispatchers.IO/Main/Default/Unconfined）{  
+}    
+//基于线程池实现，四种调度器，父类为	CoroutineScheduler，通过 dispatch 分配运行的线程  
+//launch 并不是一个顶层函数，它必须在一个对象中使用，是	CoroutineScope 接口（提供contexat，通过扩展函数管理协程）的扩展函数  
+此结构体实现一个协程，通过 withContext 切换运行线程，并在完成后返回当前线程，该方法为一个 suspend 方法，需要在协程或另一个 suspend 方法中调用。  
+async 也返回一个协程，不同点在于实现了 Deferred 接口，是一种延迟执行的方法，需要调用 .await（也是一个 suspend 方法）获取结果，一般用于同时开启多个任务，获取到所有返回结果再继续执行后面的任务。  
+默认启动，可以通过 start 手动开启，懒加载，在 launch 中传入CoroutineStart.LAZY，可以在 job.invokeOnCompletion 回调之后执行一些操作，正常和异常执行完毕都会走。  
+启动模式：  
+DEFAULT：立即开始调度  
+LAZY：start/join/await 开始调度  
+ATOMMIC：立即开始调度，第一个挂起点前无法取消（涉及cancel才有意义）  
+UNDISPATCHED：立即开始调度，直到第一个挂起点（之后由调度器（Dispatcher基于线程池实现）处理）  
+挂起：  
+线程执行到 suspend 方法时，不再执行剩余的协程代码，跳出代码块，invokeSusped 返回	COROUTINE_SUSPENDED 时执行协程的 return，去执行别的任务，而协程 post 到指定线程继续执行，完成后会切回原线程，即协程 post 一个 Runnable，让剩余代码回到原线程执行：withcontext 调用	startCoroutineCancellable，传入 coroutine 回调，DispatchedCoroutine，持有外部要恢复的协程，协程 return 会走 resumeWith，重写 afterCompletion，判断是否挂起，通过 resumeCancellableWith 恢复外部协程，再次触发 invoke。  
+作用域：涉及到代码作用范围、协程 lifecycle 等    
+lifecycle：创建协程返回 job 对象，以此获取当前协程状态，有 isActive/isCompleted/isCancelled  
+GlobalScope：单例，全局作用域，不会自动结束执行（进程级别）  
+MainScope：主线程作用域，也是全局范围  
+lifecycleScope：lifecycle 范围，用于 Activity 等 lifecycle 组件，destroy 时自动结束（绑定生命周期）  
+viewmodelScope：viewmodel 范围，被回收时自动结束  
+CoroutineScope（coroutineContext）：传入 Dispatcher.IO/Main/Default 指定作用域（也可以自定义作用域），activity 可以实现这个接口  
+Coroutinecontext：以 Key（接口，元素实现CoroutineContex）为索引数据集合接口，左向链表存储数据（节点为具体实现类 CombinedContext），可获取Job、Dispatcher，Job 的子协程发生异常被取消会同时取消 Job（返回 JobImpl 对象，继承 JobSupport，childCancelled 调用 cancellImpl 取消父 Job 和父 Job 所有子 Job）的其它子协程，而 SupervisorJob（返回 SuperviosrJobImpl 对象，是 JobImpl 子类，重写了 childCancelled 方法，返回 false）不会。  
+flow：流式处理，lifecycle与协程绑定  
+flow {}.onStart{}.onCompletiom{}.collect（suspend，默认的 flow 是冷流，即当执行 collect 时，上游才会被触发执行）{it -> ()}，不能自主取消，依赖协程取消，flowOn 切换线程，需要指明 context，launchIn 为接收操作符，指明此 Flow 运行的 scope。  
+## Warning
+async：async 作为根协程时，会在 await 的时候抛出异常（源码中有 root coroutine 的标注），作为子协程时会立即抛出异常。  
+可以通过加 coroutineExceptionHandler来保底（在 launch 中传入 {coroutinContext, throwable ->}），作用域中未被捕获的异常会最终交给 coroutineEceptionHandler 来处理。  
+此外，作用域不同，结果也不同，如在子协程 launch 中传入该 handler，也不会处理（协程的异常会向父协程委托处理，最终会走到根协程中，所以需要在根协程中传入这个 handler），coroutineScope 作用域设置也不会拦截子协程的异常，而 supervisor 作用域可以（被视为根协程），源码注释不建议使用这个作为常规手段（执行到这里时，协程已经完成并出现了相应异常，无法从该 handler 中的异常恢复）
 ## Flow
 建立在协程之上，顺序发出多个同一类型值，不只返回单个值的挂起函数，通过挂起函数异步生成和使用值  
 1.提供方异步生成添加到数据流中的数据  
