@@ -39,7 +39,33 @@ engine.load 时会先通过 cache 尝试获取，三级缓存分别为内存 -> 
 来源：来源不只是服务器（Remote），在设备上（Local）对应目录不属于 glide 管理范围也算来源。
 # ARouter
 # Dagger2
+@Moduel 表明类类型  
+@Provides 创建功能对象  
+@Component（modules = {XXModule.class}）接收数组（装入容器的 module），注解接口类，类中方法表示容器中功能对象的归属类  
+@Inject 注入功能对象，通过 DaggerXXX（定义的 component类（接口））.create.（component 声明的方法）生成功能对象  
+编译生成 DaggerXXX：采用建造者模式，重写 inject 方法完成依赖注入（通过生成的 XXX（inject 传入的参数）_MembersInjector 类真正完成依赖注入（对象传递给 XXX），根据标记的 provide 会生成 XXX_YYYFactory 类，调用声明的 provide 方法创建对象），维护module，build创建（赋值）module  
+对于复用模块的扩展有好处  
 # LeakCanary
+定义 contentprovider 进行初始化，onCreate 中调用 AppWatcher.manualInstall(application)  
+监听对象为：
+Activity -> onDestroy  
+Fragment -> onFragmentDestroyed  
+Fragment View -> onFragmentViewDestroyed  
+ViewModel -> onCleared  
+实现：  
+1.对象回收时,生成唯一 key，封装进 KeyedWeakReference ，并传入自定义 ReferenceQueue。  
+2.将 key 和 KeyedWeakReference 放入一个 map 中。  
+3.默认 5 秒后主动触发 GC,将自定义 ReferenceQueue 中的 KeyedWeakReference 全部移除(所引用对象已回收)，同时根据 KeyedWeakReference 的 ke y将 map 中的 KeyedWeakReference 也移除。  
+4.若 map 中还有 KeyedWeakReference 剩余没有入队,对应的对象没回收即为产生了内存泄露。
+5.分析内存泄露对象引用链,保存数据。
 ## Activity
+Application.registerActivityLifecycleCallbacks 注册生命周期监听，在 onActivityDestroyed 进行 watcher.watch 检测是否泄露
 ## Fragment
+fragment.registerLifecycleCallbacks 注册监听，在 onFragmentDestroyed 以及 onFragmentViewDestroyed 中 检测是否泄露  
+策略模式封装三种环境下的流程，主要 FragmentManager 获取不同
+Android O以上：activity.getFragmentManager(FragmentDestroyWatcher)  
+AndroidX：activity.getSupportFragmentManager(FragmentDestroyWatcher)  
+support包：通过 activity.getSupportFragmentManager 获得(AndroidSupportFragmentDestroyWatcher)
+获取 FragmentManager 需要 Activity 实例,所以还要监听 Activity 生命周期，onActivityCreated 中拿到 Activity 实例，从而拿到 FragmentManager
 ## ViewModel
+AndroidXFragmentDestroyWatcher 中还会单独监听 onFragmentCreated，在此对 ViewModel 进行监听：ViewModelClearedWatcher.install，通过传入 provider 和 fragment 创建 watcher，一个新的 viewModel，反射获取这个 fragment 里的每个ViewModel ，在 onCleared 里检测是否存在泄漏
