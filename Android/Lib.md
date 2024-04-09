@@ -23,7 +23,20 @@ CallServerInterceptor：与服务器建立连接，进行网络请求，并将�
 ConnectionPool：一个双向队列维护 RealConnect，记录连接失败时的的路线名单，最大连接数默认为 5 个、保活时间为 5 分钟，通过判断流是否已经被关闭，并且已经被限制创建新的流来判断当前的连接是否可以使用，如果当前的连接无法使用，就从连接池中获取一个连接，连接池中也没有发现可用的连接，创建一个新的连接，并进行握手，然后将其放到连接池中
 # Retrofit
 # Glide
+网络图片加载库，通过一系列的链式调用来加载图片。  
+placeholder：加载完成前使用的占位图    
+error：失败占位图  
+fallback：来源为空占位图  
+发起请求：with 将参数 lifecycle 和请求绑定，创建一个空 Fragment 监听 Activity 的 lifecycle，接着调用 RequestManager.load 传 url 或 drawable 作为 model 来创建 Request（监听网络状态，其中 RequestManager 包含网络连接监听，网络状态改变会处理图片加载请求）以及创建请求构造器（RequestBuilder），之后会调用 RequestBuilder.into 传入 imageView，通过 GlideBuilder （包含 BitMapPool 等接口和工厂）创建 Request 对象，最后调用 begin。  
+启动任务：启动解码任务 DecodeJob，上一步调用 begin 后 Request 会通过 Target 接口的 getSize 获取目标图片的大小，接着调用 Engine.load 尝试从内存获取缓存图片，这里的内存采用 Lrucache，失败则启动 DecodeJob 从图片来源加载请求，加载前或创建 key（资源标识符）与资源绑定，就是将 model 放入 EngineKey。  
+解码图片：上一步通过 key 找不到对应资源则 Engine 调用 DecodeJob.run 启动新的任务，接着从第一步传入的 model 获取图片 data(一般为 InputStream)，并通过 ResourceDecoder.decode 根据target大小对 data 进行缩放后的资源，也就是根据请求宽高对原始宽高缩放，将 data 转为 resource，接下里就是对资源进行转码，若有额外选项则通过 Transformation 处理 Resource，调用 Request.onResourceReady，进一步调用 Target.onResourceReady 并将图片设置到目标 view 当中，最终通过 ResourceEncoder.encode 将图片资源编码到磁盘。
 ## Cache
+engine.load 时会先通过 cache 尝试获取，三级缓存分别为内存 -> 磁盘 -> 来源。  
+内存为两级：  
+1.ActiveResource，包含一个 HashMap 和一个弱引用队列，正在使用或还处于存活状态的资源，Activity 销毁时清理资源。  
+2.MemoryCache，为 LruCache，采用 LinkedHashMap 保存数据。    
+磁盘：DiskLruCache，磁盘中的图片文件缓存，也有 LinkedHashMap，key 为 String，value 为 Entry（cleanFiles 保存文件），put 的时候 Editor 获取文件，write 写入本地，commit 提交，和 ResourceEncoder（具体写入文件操作）。    
+来源：来源不只是服务器（Remote），在设备上（Local）对应目录不属于 glide 管理范围也算来源。
 # ARouter
 # Dagger2
 # LeakCanary
