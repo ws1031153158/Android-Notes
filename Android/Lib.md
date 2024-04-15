@@ -22,6 +22,47 @@ ConnectionInterceptor：找到指定服务器的网络链接并获取对应 sock
 CallServerInterceptor：与服务器建立连接，进行网络请求，并将结果逐层返回  
 ConnectionPool：一个双向队列维护 RealConnect，记录连接失败时的的路线名单，最大连接数默认为 5 个、保活时间为 5 分钟，通过判断流是否已经被关闭，并且已经被限制创建新的流来判断当前的连接是否可以使用，如果当前的连接无法使用，就从连接池中获取一个连接，连接池中也没有发现可用的连接，创建一个新的连接，并进行握手，然后将其放到连接池中
 # Retrofit
+## 概述
+底层封装了 OkHttp，是一个 RESTful 的 http 网络请求框架的封装，因为网络请求工作本质上是由 okHttp 来完成，而 Retrofit 负责网络请求接口的封装。  
+App 通过 Retrofit 请求网络，实质上是将 okHttp 请求抽象成 Java 接口，使用 Retrofit 接口层采用注解描述和配置网络请求参数、Header、Url 等信息，用动态代理将该接口的注解翻译成一个 Http 请求，之后由 okHttp 来完成后续的请求工作。服务端返回数据后，okHttp 将原始数据交给 Retrofit，Retrofit 根据用户需求解析。  
+原理其实就是，拦截到方法、参数，再根据在方法上的注解，去拼接为一个正常的 OkHttp 请求，然后执行。
+## 请求流程
+1.调用 ApiService 接口的 list方法时，会调用 InvocationHandler 的 invoke方法  
+2.执行 loadServiceMethod 方法并返回一个 HttpServiceMethod 对象并调用它的 invoke方法  
+3.执行 OkHttpCall的 enqueue方法，本质执行的是 okhttp3.Call 的 enqueue方法  
+4.期间会解析方法上的注解，方法的参数注解，拼成 okhttp3.Call 需要的 okhttp3.Request 对象  
+5.通过 Converter 来解析返回的响应数据，并回调 CallBack 接口
+## 优点
+解耦 ，接口定义、接口参数、接口回调不在耦合在一起。  
+可以配置不同的 httpClient 来实现网络请求，如 okHttp、httpClient。  
+支持同步、异步、Rxjava。  
+可以配置不同反序列化工具类来解析不同的数据，如 json、xml。    
+请求速度快，使用方便灵活简洁。  
+## 注解
+Retrofit 使用大量注解来简化请求，Retrofit 将 okHttp 请求抽象成 Java 接口，使用注解来配置和描述网络请求参数。  
+如：  
+@HTTP	可以替换所有请求方法注解，它拥有三个属性：method、path、hasBody  
+## 动态代理
+Retrofit 在运行期，生成了 ApiService 接口的实现类，调用了 InvocationHandler 的 invoke方法。  
+Retrofit 的 create 方法会实例化定义的 API，并返回一个 call 对象：  
+1.获取 classLoader 对象  
+2.ApiService 字节码对象传入 Class 的泛型数组  
+3.执行 InvocationHandler 的 invoke 方法  
+4.代理类生成默认继承 Object，如果是 Object.class，默认调用 object 的方法（method.invoke），如果是默认方法，就执行 platform 的默认方法，否则会执行 loadServiceMethod.invoke 方法  
+LoadServiceMethod：
+loadServiceMethod(method).invoke(args) 是最关键的代码。  
+1.从 ConcurrentHashMap 取出以恶搞 serviceMethod，若存在则直接返回  
+2.通过 serviceMethod.parseAnnotations 创建一个 serviceMethod 对象（返回一个 HttpServiceMethod 对象，读取 retrofit 对象获取一些信息，注解参数的解析是由 requestFactory 真正进行的）  
+3.用 map 把创建的 serviceMethod 对象缓存起来，因为请求可能多次调用  
+invoke：  
+最终调用的是 HttpServiceMethod 的 invoke：  
+1.创建 call 对象是一个 OkHttpCall  
+2.返回一个 adapt 方法  
+call 的 enqueue 方法：  
+1.声明一个 okHttp3.Call 对象，并初始化（通过 callFactory 创建，在构造中直接赋值，而 callFactory 是一个 okHttpClient 对象，值是在创建 HttpServiceMethod 时赋值的），用来进行网络请求    
+2.调用 okHttp3.Call 的 enqueue 方法，进行真正的请求（此方法中 callback 的 onResponse 回调，通过parseResponse解析请求的响应并返回给回调接口，此外会进一步通过 responseConverter 调用convert方法，将返回结果转换为数据模型）  
+3.解析响应  
+4.成功以及失败的回调  
 # Glide
 网络图片加载库，通过一系列的链式调用来加载图片。  
 placeholder：加载完成前使用的占位图    
