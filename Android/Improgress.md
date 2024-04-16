@@ -84,3 +84,9 @@ tips：renderThread 对应硬件加速（默认开启），开启硬件加速后
 处理器时钟频率和 I/O 缓冲被停止(执行引擎和 I/0 缓冲已经没有时钟频率)，可节约 70%  CPU 和平台能耗，从 C2 切到 C0 需要 100 ns以上。  
 4.C3 状态（深度睡眠）  
 总线频率和 PLL 均被锁定，在多核心系统下，缓存无效，在单核心系统下，内存被关闭，但缓存仍有效。可节省 70%  CPU 功耗，平台功耗比 C2 状态大，唤醒时间需要 50 ns  
+# HWC
+HWC（Hardware Composer）是 Android 中进行窗口（Layer）合成和显示的 HAL 层模块，其实现是特定于设备的，而且通常由显示设备制造商 (OEM)完成，为 SurfaceFlinger 服务提供硬件支持。   
+SurfaceFlinger 可以使用 OpenGL ES 合成 Layer，这需要占用并消耗 GPU 资源。大多数 GPU 都没有针对图层合成进行优化，当 SurfaceFlinger 通过 GPU 合成图层时，应用程序无法使用 GPU 进行自己的渲染。而 HWC 通过硬件设备进行图层合成，可以减轻 GPU 的合成压力 。  
+1.SurfaceFlinge r向 HWC 提供所有 Layer 的完整列表，让 HWC 根据其硬件能力，决定如何处理这些 Layer。  
+2.HWC 会为每个 Layer 标注合成方式，是通过 GPU 还是通过 HWC 合成。  
+3.SurfaceFlinger 负责先把所有注明 GPU 合成的 Layer 合成到一个输出 Buffer，然后把这个输出 Buffer 和其他 Layer（注明 HWC 合成的 Layer）一起交给 HWC，让 HWC 完成剩余 Layer 的合成和显示。
