@@ -78,6 +78,18 @@ MotionEvent 通过 getAction 接口获取事件 Action，Action 中低 8 位地�
 FLAG_WINDOW_IS_OBSCURED：是否被透明 View 遮挡  
 FLAG_TAINTED：事件是否出现不一致  
 FLAG_TARGET_ACCESSIBILITY_FOCUS：事件是否需要先触发辅助功能 View
+## Scenarios
+condition：父 view viewpager，可左右滑动，子 view listView， 可上下滑动。    
+1.父 view onInterceptTouchEvent 为 false，上下滑动可以，左右滑动不可以。    
+原因：父 view 设置了 onInterceptTouchEvent 为 false 后，down 事件不会被父 view 拦截，事件传递到子 view，mFirstTouchTarget ！= null，所以后续的 move 事件是子 view 处理，所以上下可以，左右不可以。    
+2.onInterceptTouchEvent 为 false,ListView 重写 dispatchTouchEvent 返回 false，左右可以，上下不可以。  
+原因：down 事件传递到子 view 后子 view 返回 false，mFirstTouchTarget == null 所以 down 事件最终由父view处理，后续 move 事件也由父 view 处理。  
+3.手指点击到控件上后如果 move 到空白处，抬起手指后 click 事件不会触发。    
+原因：移动到 view 外，会将 mPrivateFlags & PFLAG_PRESSED 置反，，在view的onTouchEvent的move事件 中onClick 不会触发。    
+4.ViewGroup 中，有 2 个 Button A，B，3. 按下 A，按下空白区域，先释放A，无法触发 A 的点击事件，继续释放空白区域，又会触发 A 的点击事件。     
+原因：先释放 A 无法触发点击事件因为此时是 point_up 事件，在多指操作中，如果没有 view 处理某个时间，则把这个事件分发给 target 链表中的最后一个上，这样实际上虽然第二次按在了空白处，但 up 时间仍然是交给A处理，所以能够触发 A 的点击事件。  
+5.按下空白区域，点击 A，B 无响应。    
+原因： 按下空白区域由于没有子 View 处理该时间，所以 mFirstTouchTarget 为 null，intercepted 会置为 true，导致后续所有的事件都会被拦截。
 # Scroll
 scrollTo：基于传入参数的绝对滑动  
 scrollBy：实际上也是调用了 scrollTo，基于当前位置的相对滑动  
