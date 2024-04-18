@@ -13,18 +13,18 @@ onCreate：
 速度测量 && 启动耗时：adb shell dumpsys AMS 耗时信息（AMS）、attachBaseContext 记录启动时间，在 View 绘制完记录结束时间（埋点）（onWindowFocusChanged 是首帧绘制，还未完成）、Debug SDK、Trace SDK
 # 内存优化
 OOM：见OOM。  
-内存抖动：  
+## 内存抖动
 短时间内频繁大量创建临时对象（频繁GC），尽量避免在循环体中创建对象、尽量不要在自定义 View 的 onDraw 方法中创建对象（会被频繁调用）、对于可复用对象，可以考虑使用对象池缓存。  
-Bitmap：  
+## Bitmap
 图片内存 = 宽高一个像素占用内存（和色彩模式有关，如 ARGB_8888 为 4（8*4 = 32位 = 4字节））。  
 Bitmap 对象放在 Java 堆，像素数据放在 Native 内存，8.0 新增 NativeAllocationRegistry 来辅助回收 Native 内存，以及可减少图片内存并提升绘制效率的硬件位图 Hardware Bitmap ，Bitmap 的 Native 内存可和对象一起释放， GC 避免内存滥用。此外，Glide 会自动调整加载的图片大小（根据 Imageview，以及三级缓存优化图片加载）。  
-LeakCanary：  
+## LeakCanary
 hook Android 生命周期，自动检测当 Activity、Fragment 销毁时实例是否回收，销毁的实例传给 RefWatcher（持有它们的弱引用），保留实例（Retained Instance）数量达到阈值会进行堆转储，数据放进 hprof 文件（APP 可见阈值为 5，不可见为 1），会解析 hprof 文件，找出导致 GC 无法回收实例的引用链，就是泄漏踪迹（Leak Trace，最短强引用路径，GC Roots 到实例的路径）。  
 监听系统内存状态：  
 ComponentCallback2：在 Activity 中实现 ComponentCallback2 接口获取系统内存的相关事件, 在 onTrimMemory(level)  回调针对不同事件做不同释放内存操作  
 ActivityManager.getMemoryInfo()：  
 返回一个 ActivityManager.MemoryInfo 对象，包含系统当前内存状态（可用内存、总内存、低杀内存阈值， lowMemory 布尔值判断是否处于低内存态）  
-tips：  
+## Tips
 SparseArray：只有 integer 类型属性，避免了自动装箱（基本数据类型和包装器类型（引用类型）转换，包装器 .valueof 装箱，xxxValue 拆箱，实现基本类型和引用类直接运算）的开销，可以代替 hashMap。  
 ﻿adb shell dumpsys meminfo pid 可以获取内存信息：  
 PSS/RSS：实际使用物理内存（包括进程独占（USS）和共享（PSS按进程占用共享等分））  
