@@ -12,7 +12,10 @@ Present：View 和 Model 的中介者，做到了 View 和 Model 的解耦
 Model：数据  
 View：视图  
 ViewModel：对 View 和 Model 的交互  
-也做到了 View 和 Model 的解耦，配合 ViewBinding/DataBinding 以及 LiveData 使用，关系更加清晰，但同时由于逻辑层次较深，不易排查问题
+1.让状态管理独立于页面，从而实现 “状态管理分治”、“状态管理一致性” 和 “状态共享”。  
+2.为状态设置作用域，使状态共享做到作用域可控。    
+3.实现单向依赖，避免内存泄漏。    
+做到了 View 和 Model 的解耦，配合 ViewBinding/DataBinding 以及 LiveData 使用，关系更加清晰。    
 ViewBinding：提供数据绑定视图，数据改动反应到视图  
 dataBinding：提供双向绑定，互相影响（需要加 <layout/> 标签，通过 <data/> 标签设置要绑定的数据（类），在视图 xml 代码块中通过 @ 引用（采用 = 才是真正的双向绑定））
 # MVI
