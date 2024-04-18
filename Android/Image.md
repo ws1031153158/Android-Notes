@@ -8,3 +8,13 @@ decodeFile/decodeResource 将 drawble 转化为 bitmap，decodeStream.decodeByte
 # Rect & RectF
 都是创建矩形，都实现 Parcelabel 接口。   
 Rect 是 final 类，参数是 int ， RectF 是普通类，参数是 float，RectF 精度高，此外，有些方法不一致。
+# Tips
+图片占用的内存大小公式：分辨率 * 每个像素点的大小  
+某些场景下，位于 res 内的不同资源目录中的图片，被加载进内存时的分辨率会经过一层转换，此时的分辨率已不是图片本身的分辨率了  
+转换后的分辨率：新图 = 原图 * (设备的 dpi / 目录对应的 dpi )     
+系统默认为 ARGB_8888 作为像素点的数据格式  
+ALPHA_8 -- (1B)  
+RGB_565 -- (2B)  
+ARGB_4444 -- (2B)  
+ARGB_8888 -- (4B)  
+RGBA_F16 -- (8B)  
