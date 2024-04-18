@@ -18,6 +18,8 @@ ViewModel：对 View 和 Model 的交互
 做到了 View 和 Model 的解耦，配合 ViewBinding/DataBinding 以及 LiveData 使用，关系更加清晰。    
 ViewBinding：提供数据绑定视图，数据改动反应到视图  
 dataBinding：提供双向绑定，互相影响（需要加 <layout/> 标签，通过 <data/> 标签设置要绑定的数据（类），在视图 xml 代码块中通过 @ 引用（采用 = 才是真正的双向绑定））
+## DataBinding
+职责：通过 “适配器模式” + “数据驱动” 设计，规避 View 实例 Null 安全一致性问题，且 “数据驱动” 顺带免去 “调用 View 实例” 导致的冗余 “判空处理”和大量 “样板代码”。
 # MVI
 单向数据流动 + 状态集中管理  
 Model 主要指 View 的状态（会维护一个 data class ViewState 或者一个 sealed (相当于枚举类的扩展) class ViewEvent），View 指的是任一个 UI 的容器，I 是 Intent，把每个操作封装为 Intent，发送给 Model 处理（触发 State 的改变，View 对 State 监听，变化后自身也会做出调整（通过 Action 与 Model 联系，解耦）  
