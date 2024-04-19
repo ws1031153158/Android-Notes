@@ -1,5 +1,8 @@
 # Lifecycle
 LifecycleObserver 是 Lifecycle 的观察者，viewmodel 默认就实现了 Lifececle 这个接口，LifecycleOwner 是具有生命周期的组件，如 Activity、Fragment，持有一个 Lifecycle 对象，Lifecycle 是 LifecycleOwner 的生命周期管理器，它定义了生命周期状态和转换关系，并负责通知 LifecycleObserver 状态变化的事件。
+1.实现 “生命周期组件管理” 代码修改的一致性。   
+2.使第三方组件 随时可在自己内部拿到生命周期状态，以便执行 及时叫停 “错过时机” 异步业务 等操作。   
+3.使第三方组件调试时，能安全便捷追踪到 “事故所在生命周期源”。
 # LiveData
 可感知生命周期，仅更新处于活动状态的组件观察者。  
 1.生命周期发生变化时，LiveData 会通知对应组件(Observer)，数据发生变化时会通知更新 UI。  
