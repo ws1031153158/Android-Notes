@@ -60,3 +60,17 @@ Postcard：继承 RouteMeta（路由表内容，包含跳转路线基本信息�
 Annotation：RouteProcessor 对 @Route 类解析，先获取路由元素（method/class..），再创建路由元信息（RouteMeta）将四大组件和一个 RouteMeta 关联，并把路由元信息进行分组（放入不同 groupMap，即 @Route 中设置的 group 值），最后生成路由文件（group、provider、root 路由文件，三者组成路由表）并通过 LogisticsCenter 填充 Warehouse（routes 和 providerIndex 等索引来为跳转提供信息）。  
 跳转：首先调用 postcard.navigation 进一步调用 _arouter.navigation 这一步加载路由表。此外，withTransition 可以设置转场动画。  
 拦截：onContinue 或 onInterrupt 实现拦截器，至少调一个，是 Activity 就正常走启动流程，是其他三个组件就在终点（destination）用反射创建实例，此外 Fragment 还要设置参数返回实例，contentProvider（实现 IProvider 接口自定义服务）还要通过依赖查找发现服务（依赖注入也可以 @Autowired）
+## SPI
+Service Provider Interface，该方案是为某个接口动态寻找服务的机制，类似IOC的思想。    
+通过 ServiceLoader.load(Machine.class) 创建 ServiceLoader，去遍历 ServiceLoader 就可以找到所有有实现类。
+## ServiceLoader
+1.先获得一个 classloader    
+2.然后去加载 META-INF/services/ 下面的文件，获取相关的配置    
+3.获取对应的实现类名，即 parse 方法   
+4.利用反射，根据类名去创建对应的实例， 即 nextService 方法  
+## AutoService
+auto-service 库提供注解，对类加上注解，无需手动维护配置表：  
+1.@AutoService(Processor.class)：  
+允许/支持的注解类型，让注解处理器处理，编译阶段，会执行 AutoServiceProcessor.process，在该方法中会先调用 generateConfigFiles 生成配置文件，最终生成了配置文件中的类便指向了我们自定义的 Processor，当这个模块在使用的时候，便可以通过该配置找到具体的实现类，并完成实例化。    
+2.@SupportedAnnotationTypes({Constants.ROUTER_ANNOTATION_TYPES})：  指定JDK编译版本    
+3.@SupportedSourceVersion(SourceVersion.RELEASE_7)：  注解处理器接收的参数  
