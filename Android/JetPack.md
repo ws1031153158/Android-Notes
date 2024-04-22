@@ -10,6 +10,8 @@ LifecycleObserver 是 Lifecycle 的观察者，viewmodel 默认就实现了 Life
 3.Activity 或 Fragment 重新创建（如屏幕旋转）会立即重新接收最新数据（liveData 只会向活跃态的 observer 发通知，可以感知 observer 的 lifecycle，避免内存泄露和空指针）。  
 4.生命周期为非活跃状态，则会在非活跃态转为活跃态时接收最新数据（如后台切前台）。  
 一般配合 viewModel 使用，将数据存储在 viewModel 中，分担 activity（fragment）压力，并将 activity（fragment）作为该 livedata 的观察者（持有一个观察者列表），自定义 ivedata 可以通过重写 onActive和onInactive 来满足业务需求，支持线程切换，可以在后台线程更新数据，然后在主线程中通知观察者更新UI。  
+5.它不支持线程切换，其次不支持背压，也就是在一段时间内发送数据的速度 > 接受数据的速度，LiveData 无法正确的处理这些请求。  
+6.使用 LiveData 的最大问题是所有数据转换都将在主线程上完成。    
 数据倒灌：  
 现象：  
 新的观察者开始注册观察时，会把上次发的最后一次的历史数据传递给当前注册的观察者。  
