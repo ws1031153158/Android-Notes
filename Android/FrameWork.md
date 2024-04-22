@@ -63,12 +63,12 @@ Annotation：RouteProcessor 对 @Route 类解析，先获取路由元素（metho
 ## SPI
 Service Provider Interface，该方案是为某个接口动态寻找服务的机制，类似IOC的思想。    
 通过 ServiceLoader.load(Machine.class) 创建 ServiceLoader，去遍历 ServiceLoader 就可以找到所有有实现类。
-## ServiceLoader
+### ServiceLoader
 1.先获得一个 classloader    
 2.然后去加载 META-INF/services/ 下面的文件，获取相关的配置    
 3.获取对应的实现类名，即 parse 方法   
 4.利用反射，根据类名去创建对应的实例， 即 nextService 方法  
-## AutoService
+### AutoService
 auto-service 库提供注解，对类加上注解，无需手动维护配置表：  
 1.@AutoService(Processor.class)：  
 允许/支持的注解类型，让注解处理器处理，编译阶段，会执行 AutoServiceProcessor.process，在该方法中会先调用 generateConfigFiles 生成配置文件，最终生成了配置文件中的类便指向了我们自定义的 Processor，当这个模块在使用的时候，便可以通过该配置找到具体的实现类，并完成实例化。    
