@@ -18,7 +18,9 @@ ViewModel：对 View 和 Model 的交互
 3.实现单向依赖，避免内存泄漏。    
 做到了 View 和 Model 的解耦，配合 ViewBinding/DataBinding 以及 LiveData 使用，关系更加清晰。    
 ViewBinding：提供数据绑定视图，数据改动反应到视图  
-dataBinding：提供双向绑定，互相影响（需要加 <layout/> 标签，通过 <data/> 标签设置要绑定的数据（类），在视图 xml 代码块中通过 @ 引用（采用 = 才是真正的双向绑定））
+dataBinding：提供双向绑定，互相影响（需要加 <layout/> 标签，通过 <data/> 标签设置要绑定的数据（类），在视图 xml 代码块中通过 @ 引用（采用 = 才是真正的双向绑定））      
+1.数据绑定会导致内存开销大，影响性能。  
+2.ViewModel 和 View 的绑定，使页面异常追踪变得不方便。有可能是 View 出错，也有可能是 ViewModel 的业务逻辑有问题，也有可能是 Model 的数据出错。
 ## DataBinding
 职责：通过 “适配器模式” + “数据驱动” 设计，规避 View 实例 Null 安全一致性问题，且 “数据驱动” 顺带免去 “调用 View 实例” 导致的冗余 “判空处理”和大量 “样板代码”。  
 ## LiveDta
@@ -26,10 +28,12 @@ dataBinding：提供双向绑定，互相影响（需要加 <layout/> 标签，�
 2.遵循 “唯一可信源” 理念的约束，也即通过 “决策逻辑内聚” 和 “读写分离” 来规避 “跨域消息同步” 等场景下 高频 存在的可靠一致问题、使团队新手也能不假思索写出低风险代码。  
 3.就算不用 DataBinding，也能使 “单向依赖” 成为可能、规避潜在的内存泄漏等问题。  
 # MVI
-单向数据流动 + 状态集中管理  
+单向数据流动 + 状态集中管理（唯一数据源）  
 Model 主要指 View 的状态（会维护一个 data class ViewState 或者一个 sealed (相当于枚举类的扩展) class ViewEvent），View 指的是任一个 UI 的容器，I 是 Intent，把每个操作封装为 Intent，发送给 Model 处理（触发 State 的改变，View 对 State 监听，变化后自身也会做出调整（通过 Action 与 Model 联系，解耦）  
 model 暴露唯一入口，用来接收 view 唯一出口发出的 intent，同时也只有一个唯一出口用来向 view 返回 state，view 的唯一入口和此出口统一。  
 intent -> model -> view   
+1.所有的操作最终都会转换成 State ，所以当复杂页面的 State 容易膨胀。    
+2.state 是不变的，因此每当 state 需要更新时都要创建新对象替代老对象，这会带来一定内存开销。    
 # 插件化
 APP 分为多个模块，一个模块一个 apk，分开打包，只发布主 APK，插件 APK 动态下发给主 apk
 ## Load Class
