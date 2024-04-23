@@ -7,7 +7,8 @@ Controller：Activity 和 Fragment 作为 Controller，用于 View 的交互以�
 Model：数据  
 View：视图  
 Present：View 和 Model 的中介者，做到了 View 和 Model 的解耦  
-对于复杂 Layout，会有很多个 Present，接口过多，此外，会持有 activity 对象，可能内存泄露或者 npe
+通过获取局部引用进行精准刷新。  
+对于复杂 Layout，会有很多个 Present，接口过多，此外，会持有 activity（view） 对象，可能内存泄露或者 npe
 # MVVM
 Model：数据  
 View：视图  
