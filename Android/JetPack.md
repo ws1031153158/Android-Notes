@@ -91,3 +91,9 @@ Coroutine：CURD 方法定义为 suspend，CoroutinesRoom.execute 执行真正�
 通过 Navigation.findNavcontroller(fragment).navigate/Up(action) 实现导航或点击逻辑，传统传递 bundle 来在 fragment 之间传递参数，在 navigate 方法中添加 arg 参数，但需要定义多个 name 容易混淆。  
 谷歌提供了 safeArgs 方式，为 fragment 提供 directions 文件（用于传参），有 argument 标签的自动生成 Args 文件（用于取参）。
 # Compose
+## Foundation
+1.使用 @Composable 注解标识 Composable 函数。   
+2.声明式代码，不关注如何转换到对应的状态，不关注 UI 在先前是什么状态，只需要指定当前应当处于的状态，框架控制状态转换。   
+3.采用组合模型，不再有单个父类的限制，只需要在方法体中调用即可，随后可以对其进行装饰，解决了单继承问题。   
+4.公共的 Composable API 只是一组其接收的参数，Compose 无法控制它们，另一方面，Composable 函数可以管理和创建状态，将状态及接收到的数据作为参数传递给其他的 Composable 函数，可以启用子级 Composable 函数通过回调告知当前改变已备份。  
+5.重组特性，任何 Composable 函数在任何时候都可以被重新调用。
