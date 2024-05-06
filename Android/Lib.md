@@ -41,7 +41,18 @@ App 通过 Retrofit 请求网络，实质上是将 okHttp 请求抽象成 Java �
 ## 注解
 Retrofit 使用大量注解来简化请求，Retrofit 将 okHttp 请求抽象成 Java 接口，使用注解来配置和描述网络请求参数。  
 如：  
-@HTTP	可以替换所有请求方法注解，它拥有三个属性：method、path、hasBody  
+@HTTP 可以替换所有请求方法注解，它拥有三个属性：method、path、hasBody    
+@GET 请求方法注解，get请求，括号内的是请求地址，Url的一部分  
+@Query 请求参数注解，用于Get请求中的参数    
+@Field 请求参数注解，提交请求的表单字段，必须要添加，而且需要配合 @FormUrlEncoded（Post 请求如果有参数需要在头部添加，表示请求实体是一个 From 表单，每个键值对需要使用 @Field 注解）  
+@Body 上传 json 格式数据，直接传入实体会自动转为 json，转化方式是 GsonConverterFactory 定义的（不能用于表单或者支持文件上传的表单的编码，即不能与 @FormUrlEncoded 和 @Multipart 注解同时使用）  
+@Path 请求参数注解，用于 Url中 的占位符 {}  
+@Url 表示指定请求路径，可以当做参数传入  
+@headers 请求头注解，用于添加固定请求头，可以添加多个  
+@Streaming 表示响应体的数据用流的方式返回，使用于返回数据比较大  
+@Multipart 表示请求实体是一个支持文件上传的表单，需要配合 @Part 和 @PartMap 使用，适用于文件上传  
+@Part 用于表单字段，适用于文件上传的情况，@Part 支持三种类型：RequestBody、MultipartBody.Part、任意类型  
+@PartMap  用于多文件上传， 与 @FieldMap 和 @QueryMap 的使用类似  
 ## 动态代理
 Retrofit 在运行期，生成了 ApiService 接口的实现类，调用了 InvocationHandler 的 invoke方法。  
 Retrofit 的 create 方法会实例化定义的 API，并返回一个 call 对象：  
