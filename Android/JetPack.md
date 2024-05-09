@@ -97,3 +97,8 @@ Coroutine：CURD 方法定义为 suspend，CoroutinesRoom.execute 执行真正�
 3.采用组合模型，不再有单个父类的限制，只需要在方法体中调用即可，随后可以对其进行装饰，解决了单继承问题。   
 4.公共的 Composable API 只是一组其接收的参数，Compose 无法控制它们，另一方面，Composable 函数可以管理和创建状态，将状态及接收到的数据作为参数传递给其他的 Composable 函数，可以启用子级 Composable 函数通过回调告知当前改变已备份。  
 5.重组特性，任何 Composable 函数在任何时候都可以被重新调用。
+## Refrensh
+Compose 更新 UI 的唯一方法是通过新参数调用同一可组合项。可组合项中的状态更新时，就会发生重组。   
+1.通过 multableStateOf 来构建一个可变状态，其中 value 改变时会引起 compose 进行重组，自动读取 value 所有的组合函数进行重组，但不能刷新 UI。   
+2.需要借助 remember 来记录初始组合期间的 value，在重组时返回，他也可以存储不可变对象，以及将初始化或计算成本高昂的对象或操作结果存储在组合中，接受 key 参数，当 key 发生变化，缓存值会失效并再次对 lambda 块进行计算，控制组合中对象的生命周期，不会在每次重组时都进行对象重建高成本操作。    
+3.remember 在重组后保持状态，但不会在配置更改后保持状态，想在配置更改后保持状态，可以使用 rememberSaveable 代替，会自动保存可保存在 Bundle 中的任何值，不支持 Bundle 存储可将对象声明为 @Parcelize 可序列化，不能序列化可以将其传入自定义 Saver 对象，自定义存储规则。  
