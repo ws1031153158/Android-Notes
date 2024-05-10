@@ -46,9 +46,7 @@ bind：在父类（viewBinding）创建回调或 handler，通过 mapBinding 遍
 事件：生成 Binding 类中实现 View 事件监听，在构造时实例化监听，在绑定时将事件监听对象赋值给对应 View。  
 viewStub：利用 ViewStubProxy 延迟绑定（使用 layout 中 ViewStub 实例化 ViewStubProxy 对象赋 viewStub 变量，并与 Bingding 关联，在 infate 时执行 mProxyListener，生成 ViewStub的Binding，强制执行主 Binding 重绑）。
 # WorkManager
-AndroidX 库所有，用于替代后台 Service（特定时间执行后台任务或大型操作以及重复性任务），拥有更加严谨的监管机制，更好的性能，重写 doWork 方法执行任务，有返回值。
-# Compose
-避免布局嵌套多次测量问题，引入固有特性测量（Intrinsic），允许父对子测量前，先测子的固有尺寸（先对整个 viewTree 进行固有特性测量，在对整体进行正常测量），将命令式编程变为声明式编程。  
+AndroidX 库所有，用于替代后台 Service（特定时间执行后台任务或大型操作以及重复性任务），拥有更加严谨的监管机制，更好的性能，重写 doWork 方法执行任务，有返回值。  
 # Room
 可返回 Coroutine、RxJava 等库类型结果。  
 Database：数据库入口，继承 RoomDatabase，提供获取 DAO 抽象方法，关联 table 对应 entities，使用注解 @Database(entities,version) 来标识。  
@@ -96,7 +94,8 @@ Coroutine：CURD 方法定义为 suspend，CoroutinesRoom.execute 执行真正�
 2.声明式代码，不关注如何转换到对应的状态，不关注 UI 在先前是什么状态，只需要指定当前应当处于的状态，框架控制状态转换（状态变化时，界面按照先前描述的重新渲染，而不用像命令一样，告诉程序该干什么，维护各种状态）。   
 3.采用组合模型，不再有单个父类的限制，只需要在方法体中调用即可，随后可以对其进行装饰，解决了单继承问题。   
 4.公共的 Composable API 只是一组其接收的参数，Compose 无法控制它们，另一方面，Composable 函数可以管理和创建状态，将状态及接收到的数据作为参数传递给其他的 Composable 函数，可以启用子级 Composable 函数通过回调告知当前改变已备份。  
-5.重组特性，任何 Composable 函数在任何时候都可以被重新调用。
+5.重组特性，任何 Composable 函数在任何时候都可以被重新调用。  
+6.避免布局嵌套多次测量问题，引入固有特性测量（Intrinsic），允许父对子测量前，先测子的固有尺寸，即先对整个 viewTree 进行固有特性测量，在对整体进行正常测量。
 ## Refrensh
 Compose 更新 UI 的唯一方法是通过新参数调用同一可组合项。可组合项中的状态更新时，就会发生重组。   
 1.通过 multableStateOf 来构建一个可变状态，其中 value 改变时会引起 compose 进行重组，自动读取 value 所有的组合函数进行重组，但不能刷新 UI。   
