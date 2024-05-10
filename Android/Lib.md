@@ -90,6 +90,34 @@ engine.load 时会先通过 cache 尝试获取，三级缓存分别为内存 -> 
 磁盘：DiskLruCache，磁盘中的图片文件缓存，也有 LinkedHashMap，key 为 String，value 为 Entry（cleanFiles 保存文件），put 的时候 Editor 获取文件，write 写入本地，commit 提交，和 ResourceEncoder（具体写入文件操作）。    
 来源：来源不只是服务器（Remote），在设备上（Local）对应目录不属于 glide 管理范围也算来源。
 # ARouter
+## Jump
+1.编译时：通过 APT 封装成目标类信息类 route$xxx.class，对应 compiler，包括 Route、AutoWire、Interceptor 三个解析器。    
+2.运行时：将 APT 生成的类添加到集合中，传入 key 与额外信息，并获取对应目标类的信息，结合后进行跳转，本身的 API，包括 Launcher、Frossard、SDK、Logistic Center 四层。   
+3.其中，Frossard 内部有 Service（本质是接口，封装一些功能和组件）、Callback 和 Template（编译期生成一些映射文件会按照此模板）。    
+4.SDK 包含了 Ware House（存储运行时加载的配置文件和映射关系）、Thread（提供线程池，存在多个拦截器及跳转过程中都是需要异步执行）、Log、Exception 以及 Class 工具（用于解决不同类型 APK 兼容问题）。     
+## Advantage
+1.直接解析 URL 路由，解析参数并赋值到对应目标字段的页面中。   
+2.支持 InstantRun，减少编译的次数，可以简单地将代码修改即时地同步到 APK 中，大规模降低开发复杂度。   
+3.允许自定义拦截器，其实就是 AOP 的实现，可以自定义多个拦截器解决一些面向行为编程上出现的问题。    
+4.可以提供 IoC 容器。  
+5.映射关系自动注册。  
+6.提供很多种降级策略供用户自行选择，而原生的路由方案存在无法灵活降级的问题，StartActivity()一旦失败将会抛出运营级异常。
+## Foundation
+### 注册
+1.Interceptor Processor 扫描注解类文件   
+2.按照不同种类源文件进行分类  
+3.按照固定的命名格式生成映射文件：ARouter$project.name$modole.name  
+4.初始化通过固定包名加载映射文件  
+### 加载
+1.分组加载，ARouter 允许某一个模块下有多个分组，所有的分组最终会被一个 root 节点管理，每个 root结 点都会管理整个模块中的 group 节点，每个 group 结点则包含了该分组下的所有页面，可以按照一定的业务规则或者命名规范把一部分页面聚合成一个分组，每个分组相当于路径中的一段，而每个模块中都会有一个 Interceptor 结点，此外每个模块还会有控制拦截反转的 provider 结点。   
+2.按需加载，ARouter 在初始化的时一次性加载所有 root 结点，不加载 Group 结点，降低初始化时加载结点的数量。当分组下某个页面第一次被访问时，整个分组的全部页面都会被加载。  
+### 拦截器
+拦截器的实现方式与路径注册方式一样，可以将不同功能的拦截器放在不同功能的模块中，只有模块被打包到整个项目中，因为自动注册机制所以拦截器就会生效，涉及到注册和反注册，且每次跳转可能都会生效，太多的拦截器会影响性能。  
+### InstantRun
+根据 AndroidSDK 和 GradlePlugin 的版本，支持 SplitAPK，从中可以获取所有 Dex 的位置，进而实现映射关系的加载，不支持 SplitAPK 则需要通过运行时的反射拿到 InstantRun 的 SDK 的一个类的 Path，存在静态方法 getDexFileDirectory 来获取 Dex 真实存放位置。
+### 依赖注入
+1.在编译期，扫出需要自动装配（自动体现在将字段自动地进行赋值而不需要用户手动干预）的字段并注册在映射文件中，跳转时按照预先的配置从 Url 中提取参数，按照类型放入 Intent 中，解决了如何通过 Url 跳转到 Native 页面。  
+2.在运行期会在目标页面进行初始化的时候调用 ARouter.inject(this)，将自身的实例传递进去。ARouter 会查找到编译期为调用方生成的注入辅助类（比方在编译期扫描到一个页面需要进行自动装配，此时就会为页面生成一个注入辅助类，在运行的时候调用注入辅助类的方法对于字段进行赋值，这其实就是模拟用户对于字段进行赋值），在实例化辅助类之后，调用其中的 inject 方法完成对于字段的赋值。
 # Dagger2
 @Moduel 表明类类型  
 @Provides 创建功能对象  
