@@ -127,6 +127,11 @@ onDettach
 1.通过 transaction 操作，通过 add（将所有 fragment 叠加到 frameLayout 中，可能有重叠问题） 或 replace（先将原来的 remove 掉）  
 2.一个容器只能添加一种 fragment，通过 add 添加的只能添加一次，hide 和 show 切换，生命周期不变，replace 添加的可以多次  ，执行上一个 fragment 的 onDestroyView、onDestroy、onDetach，和下一个的 onAttach、onCreate、onCreateView、onViewCreated、onStart、onResume  
 3.Activity 添加 fragment 默认不会添加到任务栈，transaction 内部维护双向链表，记录 add 和 replace 的fragment，自动实现类似出栈入栈操作
+### 通信
+1.当然可以使用 eventus，有点大材小用了，基本上不会考虑。   
+2.通过 activity，若 activity 持有 fragment 实例，那么可以直接获取到其中所有方法，没持有也可以通过 findfragmentByTag/findFragmentById 等获取，而 fragment 可以直接通过 getActivity 拿到 activity 的引用。此外，在 activity 或 fragment 中创建子 fragment 时添加 callback 可以实现 fragment 间的通信，不过这种属于 android 包中老 fragment 的手段，新的以及从 AOSP 移到了 androidx 中，这在方式不再考虑。  
+3.基于 ResultAPI，fragmentManager 成为了 fragmentResult 的持有者，可以通过使用 Fragment 扩展函数，进一步调用 fragmentManager.setFragmentResultListener 方法，为 fragment 设置监听。fragment 在 manager 中注册监听后，子 fragment 返回 result 时就会通知该 fragment。（setResult 多次只返回一次结果）   
+4.可以通过 viewModel 实现通信，例如 fragment 都去订阅 activity 的 viewModel 中的 liveData，感知变化。
 ## LaunchMode
 standard：默认，每次启动 Activity 都会创建实例入栈，不可以使用 applicationContext 启动此模式的 activity（不存在任务栈），需要指定 FLAG_ACTIVITY_NEW_TASK 创建任务栈  
 singleTop：栈顶复用，启动的 activity 位于栈顶则调用 onNewIntent    
