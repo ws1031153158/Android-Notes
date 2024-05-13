@@ -98,7 +98,11 @@ Ztgote fork 出PMS 进程，在 PMS 的 main 函数中完成初始化加载。
 2.调用 startActivityForResult ，不过已经被弃用了，可以用 ActivityResult API 来实现  
 3.instrumentation 执行  execStartActivity  
 4.ATMS 执行 startActivity（此时 AIDL 通信到 S 端了），调用到 resumeTopActivity，如果顶层 activity 为 null，则通过回调 Binder 通信到 ActivityThread 执行 transaction，其中的 handler （内部维护一个对象 H） 执行 sendMessage，由 AT 来 handleMessage，并执行 performLaunchActivity，在这一步获取 activity 信息，需要的话会使用 classLoader 来创建 activity，若第一次启动，则创建 application。  
-5.looper.prepareMainLooper 开始消息循环，最终调用 activity 的 onCreate
+5.looper.prepareMainLooper 开始消息循环，最终调用 activity 的 onCreate  
+## onNewIntent
+1.activity launchMode 设置为 singleTop，并处于栈顶时启动，或 startActivity 时设置了 FLAG_ACTIVITY_SINGLE_TOP，不再创建实例，直接使用原来的，并会调用 onNewIntent，后续生命周期中其他方法也会基于此方法中传递的参数调用。（onPause -> onNewIntent -> onResume）。  
+2.launchMode 为 singleTask 时，activity 不在栈顶，再次启动会调用 onNewIntent，onStart -> onNewIntent -> onResume，若已经在栈顶，则与 singleTop 类似。  
+3.若没有设置 setIntent，那么 onNewIntent 返回的会是旧的 intent。
 ## Lifecycle
 onCreate  
 onStart：可见（如透明的）  
