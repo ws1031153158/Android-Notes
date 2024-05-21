@@ -60,9 +60,58 @@ hook Android 生命周期，自动检测当 Activity、Fragment 销毁时实例�
 ComponentCallback2：在 Activity 中实现 ComponentCallback2 接口获取系统内存的相关事件, 在 onTrimMemory(level)  回调针对不同事件做不同释放内存操作  
 ActivityManager.getMemoryInfo()：  
 返回一个 ActivityManager.MemoryInfo 对象，包含系统当前内存状态（可用内存、总内存、低杀内存阈值， lowMemory 布尔值判断是否处于低内存态）  
+## 可优化点
+### 自动装箱  
+尽量使用基本数据类型来代替封装数据类型，int 比 Integer 要更加有效，其它数据类型也是一样。自动装箱的核心是把基础数据类型转换成对应的复杂类型。自动装箱转化时，会产生一个新的对象，这样就会产生更多的内存和性能开销。如 int 只占4字节，而 Integer 对象有16字节，特别是 HashMap 这类容器，进行增、删、改、查操作时，都会产生大量的自动装箱操作。   
+### 内存复用   
+1.资源复用：通用的字符串、颜色定义、简单页面布局的复用。  
+2.对象池：显示创建对象池，实现复用逻辑，对相同的类型数据使用同一块内存空间。  
+3.Bitmap对象的复用：使用 inBitmap 属性可以告知 Bitmap 解码器尝试使用已经存在的内存区域，新解码的 Bitmap 会尝试使用之前那张 Bitmap 在 heap 中占据的 pixel data 内存区域。  
+### 择优数据结构  
+1.SparseArray与ArrayMap    
+Android 自身还提供了一系列优化过后的数据集合工具类，如 SparseArray、SparseBooleanArray、LongSparseArray，使用这些 API 可以让我们的程序更加高效。  
+HashMap 工具类会相对比较低效，因为它需要为每一个键值对都提供一个对象入口，而 SparseArray 就避免掉了基本数据类型转换成对象数据类型的时间。  
+ArrayMap 提供了和 HashMap 一样的功能，但避免了过多的内存开销，方法是使用两个小数组，而不是一个大数组。并且 ArrayMap 在内存上是连续不间断的。总体来说，在 ArrayMap 中执行插入或者删除操作时，从性能角度上看，比 HashMap 还要更差一些，但如果只涉及很小的对象数，比如1000以下，就不需要担心这个问题了。因为此时 ArrayMap 不会分配过大的数组。  
+2.避免使用枚举类型    
+枚举最大的优点是类型安全，但在 Android 平台上，枚举的内存开销是直接定义常量的三倍以上。  
+每一个枚举值都是一个单例对象，在使用它时会增加额外的内存消耗，所以枚举相比与 Integer 和 String 会占用更多的内存。大量使用 Enum 会增加 DEX 文件的大小，会造成运行时更多的 IO 开销，使我们的应用需要更多的空间。特别是分 Dex 多的大型 App，枚举的初始化很容易导致 ANR。
+### 避免对象创建
+1.我们可以在字符串拼接的时候尽量少用 +=，多使用 StringBuffer，StringBuilder。    
+2.不要在 onMeause、onLayout、onDraw 中去刷新 UI（requestLayout）。    
+3.自定义 View 的onLayout、onDraw、列表遍历等频繁调用的方法里创建对象。这些方法会被多次调用，在其内部创建对象会导致系统频繁申请存储空间并触发 GC，导致内存抖动，严重会导致 OOM。
+### 慎用 Service
+如果应用程序当中需要使用 Service 来执行后台任务，一定注意只有当任务正在执行的时候才让 Service 运行起来。另外，当任务执行完之后去停止 Service 时，要小心 Service 停止失败导致内存泄漏的情况。  
+启动一个 Service 时，系统会倾向于将这个 Service 所依赖的进程进行保留，这样就会导致这个进程变得非常消耗内存。并且系统可以在 LruCache 当中缓存的进程数量也会减少，导致切换应用程序的时候耗费更多性能，严重的话，甚至有可能会导致崩溃。因为系统在内存非常吃紧的时候可能已无法维护所有正在运行的 Service 所依赖的进程了。  
+为了能够控制 Service 的生命周期，Android 官方推荐的最佳解决方案就是使用 IntentService，这种 Service 的最大特点就是当后台任务执行结束后会自动停止，从而极大程度上避免了 Service 内存泄漏的可能性。  
+通常避免使用持久性服务，它们会持续请求使用可用内存。建议采用 WorkManager等替代实现方式。  
+## 图片优化
+### 图片格式
+PNG：无损压缩图片方式，支持 Alpha 通道，切图素材大多用这种格式。  
+JPEG：有损压缩图片格式，不支持背景透明和多帧动画，适用于色彩丰富的图片压缩，不适合于 logo。  
+WEBP：支持有损和无损压缩，支持完整的透明通道，也支持多帧动画，是一种比较理想的图片格式。  
+.9图：点九图实际上仍然是 png 格式图片，它是针对 Andorid 平台特殊的图片格式，体积小，拉伸变形，能指定位置拉伸或者填充，能很好的适配机型。  
+无损 webp 平均比 png 小26%，有损 jpeg 平均比 webp 少24%-35%，无损 webp 支持 Alpha 通道，有损 webp 在一定条件下也支持。采用 webp 在保持图片清晰情况下，可以优先减少磁盘空间大小。可以将 drawable 中的 png、jpg 格式图片转换为 webp 格式图片。  
+### 像素格式
+ALPHA_8，内存 1B，色彩组成为透明度，比较少用到。  
+RGB_565，内存2B，色彩组成为颜色，不需要 Alpha 通道的，特别是 .JPG 格式的。  
+ARGB_4444，内存2B，色彩组成为颜色+透明度，内存只占 ARGB_8888 的一半，已被废弃。  
+ARGB_8888，内存4B，色彩组成为颜色+透明度，系统默认的像素点格式。  
+通过替换系统 drawable 默认色彩通道（BitmapFactory.Options.inPreferredConfig），将部分没有透明通道的图片格式由 ARGB_8888 替换为 RGB565，在图片质量上的损失几乎肉眼不可见，而每张图片可以节省1/2的内存。但不通用，取决于图片是否有透明度需求。
+### 采样率
+在把图片载入内存之前，我们需要先计算出一个合适的 inSampleSize 缩放比例，降低图片像素，来达到降低图片占用内存大小的目的，避免不必要的大图载入。  
+采样率 inSampleSize 只能是整数(只能是2的次方)，不能很好保证图片质量。如果 inSampleSize=2，则最终内存占用就会是原来的1/4（宽高都为原来的1/2），适用于图片过大的情况。  
+## Bitmap
+### 释放 bitmap 对象  
+Bitmap 使用完后需要调用 recycle() 方法回收资源，否则会发生内存泄漏。bitmap.recycle 用于释放与当前 Bitmap 对象相关联的 Native 对象，并清理对像素数据的引用。但不能同步地释放像素数据，而是在没有其它引用的时候，简单地允许像素数据被作为垃圾回收掉。  
+Bitmap 在内存中的存储分两部分 ：一部分是 Bitmap 对象，另一部分为对应的像素数据，前者占据的内存较小，而后者才是内存占用的大头。
+### 复用  
+可以通过 LruCache 等缓存机制来管理 Bitmap 对象的复用。除此之外，可以使用 BitmapFactory.Options 的 inBitmap 属性来指定一个可复用的 Bitmap 对象。
+### 释放 imageview 资源
+bitmap 资源和 background 资源都要回收，对其调用 recycle，并且将维护的局部/全局对象等置为 null。
 ## Tips
-SparseArray：只有 integer 类型属性，避免了自动装箱（基本数据类型和包装器类型（引用类型）转换，包装器 .valueof 装箱，xxxValue 拆箱，实现基本类型和引用类直接运算）的开销，可以代替 hashMap。  
-﻿adb shell dumpsys meminfo pid 可以获取内存信息：  
+1.SparseArray：只有 integer 类型属性，避免了自动装箱（基本数据类型和包装器类型（引用类型）转换，包装器 .valueof 装箱，xxxValue 拆箱，实现基本类型和引用类直接运算）的开销，可以代替 hashMap。  
+2.使用 static final 优化成员变量，static 会由编译器调用 clinit 方法进行初始化，之后访问的时候会需要先到它那里查找，然后才返回数据。static final 不需做多余的查找动作，打包在 dex 文件中可以直接调用，并不会在类初始化申请内存。基本数据类型的成员，可以全写成 static final。   
+3.﻿adb shell dumpsys meminfo pid 可以获取内存信息：  
 PSS/RSS：实际使用物理内存（包括进程独占（USS）和共享（PSS按进程占用共享等分））  
 Private：进程独占内存  
 SWAP PSS：释放后其他进程可以使用的内存，所以只能看到 Dirty，包含在 PSS  
