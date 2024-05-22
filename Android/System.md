@@ -146,7 +146,10 @@ singleInstance：单一实例，每个 activity 都位于独立的栈中
 2.可以在 onNewIntent 中通过 setContent 手动更新，这样 get 到的是最新的值。
 ## Tips
 1.SplashActivity 是打开应用时，有一个欢迎界面，一般做一些初始化工作。  
-2.Application 在单进程应用中为单例，onCreate 只执行一次，在 LoadApk.makeApplication 中判断为空才会创建（由 AT.instrumentation.newApplication 实现）。
+2.Application 在单进程应用中为单例，onCreate 只执行一次，在 LoadApk.makeApplication 中判断为空才会创建（由 AT.instrumentation.newApplication 实现）。  
+3.manifast 可以设置 taskAffinity，标识 Activity 所需要的任务栈名称，默认应用中所有 Activity 所需任务栈名称都为应用包名，一般跟 singleTask 或 allowTaskReparenting 属性结合使用，属性值不能与当前应用包名相同否则等于没设置。    
+设置 singleTask，同时指定 Activity 所需要的栈名称，使相应的 Activity 存在于不同的栈中。   
+当 allowTaskReparenting 为 true 时，表示 Activity 能从启动的 Task 移动到有 affinity 的 Task。  
 # Service
 ## Launch
 一般通过 startService 来启动一个服务，多次调用只会走一次 onCreate（只创建一次），但 onStartCommmand（onStart 弃用了） 每次都会调用。  
