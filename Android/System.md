@@ -21,7 +21,7 @@ Configuration 是用来保存系统的各项配置的类，如网络运营商配
 mWindowingMode 保存的是该配置下窗口的显示模式，例如全屏、分屏、浮动等模式。    
 ## WindowContainer
 ConfigurationContainer 是 WMS 里设计的配置容器类，一个配置容器可以容纳其他的配置容器（就像 View 那样），它是抽象类，只定义的容纳关系，并没有实现子容器的保存形式，它也是一个泛型类，只能保存对应泛型的子容器。    
-WindowContainer 是 WMS 里设计的窗口容器类，它可以容纳其他的窗口容器，同时它继承自配置容器类 ConfigurationContainer，因此每一个窗口容器可以向它管理的窗口附加一份新的配置(主要为 WindowConfiguration相关的配置)，窗口容器将它的子容器保存在一个列表里，并实现了添加、删除子容器，以及遍历不同类型子容器的便捷方法，内部持有一个 surface 对象。    
+WindowContainer 是 WMS 里设计的窗口容器类，它可以容纳其他的窗口容器，同时它继承自配置容器类 ConfigurationContainer，因此每一个窗口容器可以向它管理的窗口附加一份新的配置(主要为 WindowConfiguration相关的配置)，窗口容器将它的子容器保存在一个列表里，用于管理窗口配置，包括窗口的生命周期（创建、销毁）、布局和渲染（调整窗口大小，位置和可见性）等，并实现了添加、删除子容器，以及遍历不同类型子容器的便捷方法，内部持有一个 surface 对象。    
 Task、activityRecord、windowState 等都间接/直接继承 windowContainer，在 sf 中都有对应 layer，关系为 task -> activityRecord -> windowState
 ### WindowToken
 窗口 Token，用来做 Binder 通信，同时也是一种标识，应用组件在需要新的窗口时，必须提供 WindowToken 以表明自己的身份，并且窗口的类型必须与所有的 WindowToken 的类型一致
@@ -51,10 +51,9 @@ merege：
 onTransitionConsumed：当 transition 停止或 merge 完成时执行一些清理工作
 #### TransitionObserver
 负责监听 ST 各个阶段（onTransitionReady 等）
-### WindowContainer
-Task 等的基类，用于管理窗口配置，内部维护一个 SurfaceControl（mSurfaceControl），主要负责管理应用程序的窗口，包括窗口的生命周期（创建、销毁）、布局和渲染（调整窗口大小，位置和可见性）等
 ### Transition
 是动画 change 的集合，包含 window 的 open/close、bounds/mode 的改变、display 的 rotate/size/density 改变，BSE 的回调会调到此处的 onTransitionReady，这里会从内核回调到 Shell 侧 TransitionPlayerImpl 的 onTransitionReady。  
+会在各个回调（如 onTransitionReady）中传递 transitionInfo，info 包含了 trigger type 以及一个 changes list
 lifecycle：  
 1.Trigger：启动 task  
 2.Collecting：记录所有的 change，等待 C 端 接收 chane 并将匹配的每一帧数据和suface 的 change 绘制到同步的 transaction(为 invisible)  
