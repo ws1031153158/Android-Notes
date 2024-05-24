@@ -21,7 +21,14 @@ Configuration 是用来保存系统的各项配置的类，如网络运营商配
 mWindowingMode 保存的是该配置下窗口的显示模式，例如全屏、分屏、浮动等模式。    
 ## WindowContainer
 ConfigurationContainer 是 WMS 里设计的配置容器类，一个配置容器可以容纳其他的配置容器（就像 View 那样），它是抽象类，只定义的容纳关系，并没有实现子容器的保存形式，它也是一个泛型类，只能保存对应泛型的子容器。    
-WindowContainer 是 WMS 里设计的窗口容器类，它可以容纳其他的窗口容器，同时它继承自配置容器类 ConfigurationContainer，因此每一个窗口容器可以向它管理的窗口附加一份新的配置(主要为 WindowConfiguration相关的配置)，窗口容器将它的子容器保存在一个列表里，并实现了添加、删除子容器，以及遍历不同类型子容器的便捷方法。  
+WindowContainer 是 WMS 里设计的窗口容器类，它可以容纳其他的窗口容器，同时它继承自配置容器类 ConfigurationContainer，因此每一个窗口容器可以向它管理的窗口附加一份新的配置(主要为 WindowConfiguration相关的配置)，窗口容器将它的子容器保存在一个列表里，并实现了添加、删除子容器，以及遍历不同类型子容器的便捷方法，内部持有一个 surface 对象。    
+Task、activityRecord、windowState 等都间接/直接继承 windowContainer，在 sf 中都有对应 layer，关系为 task -> activityRecord -> windowState
+### WindowToken
+窗口 Token，用来做 Binder 通信，同时也是一种标识，应用组件在需要新的窗口时，必须提供 WindowToken 以表明自己的身份，并且窗口的类型必须与所有的 WindowToken 的类型一致
+### ActivityRecord
+继承 windowToken，对应着应用进程中的 Activity，包含了 activity 所有信息
+### WindowState
+继承 activityRecord，对应着一个窗口，用于描述窗口的状态信息以及和WindowManagerService进行通信，表示一个窗口的所有属性
 ### RootWindowContainer
 RootWindowContainer 是 WMS 管理所有窗口容器的根容器，系统中只存在一个，由 WMS 服务创建，但是会等待 ATMS 服务启动完成后再初始化，管理的是 DisplayContent（也是一个 windowContainer，对应着显示屏幕，对应唯一 ID，添加窗口时通过指定ID决定显示在哪个屏幕），每一个 DisplayContent 对应的是一个 Display 屏幕（包括物理屏幕和虚拟屏幕），同时实现了 DisplayListener 的接口，可以监听屏幕的添加、删除操作。
 ### WindowContainerTransaction
