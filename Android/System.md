@@ -12,6 +12,20 @@ Window 是个抽象类，实现类为 PhoneWindow。Window 是分层级的：系
 Window 是一种概念，具体以 View 的形式存在（一般为 DecorView），通过 ViewRootImpl 与 View 联系，一个 Window 对应一个 ViewTree（控制 View 显示层级），Window 会拦截并分发事件给 View。
 ## WindowManager
 访问 Window 的入口，实现类为 WindowManagerImpl，WindowManagerImpl 又将具体实现委托给 WindowManagerGlobal（进程单例），通过 WM 访问 WMS 进行 add、remove、update 等操作，此过程为 IPC 过程。
+## WindowConfiguration
+Configuration 是用来保存系统的各项配置的类，如网络运营商配置、屏幕参数配置、显示模式配置等，其中 windowConfiguration 就是保存的窗口相关的配置。  
+ WindowConfiguration 里有两个主要 Rect 区域：  
+- mBounds 保存该配置下窗口相对于整个屏幕的可用区域  
+- mAppBounds 可以用来保存 mBounds 中去除了一些系统装饰后应用可以使用的区域  
+- mMaxBounds （Android 12L）应用可以获取到的最大区域，一般是全屏幕  
+mWindowingMode 保存的是该配置下窗口的显示模式，例如全屏、分屏、浮动等模式。    
+## WindowContainer
+ConfigurationContainer 是 WMS 里设计的配置容器类，一个配置容器可以容纳其他的配置容器（就像 View 那样），它是抽象类，只定义的容纳关系，并没有实现子容器的保存形式，它也是一个泛型类，只能保存对应泛型的子容器。    
+WindowContainer 是 WMS 里设计的窗口容器类，它可以容纳其他的窗口容器，同时它继承自配置容器类 ConfigurationContainer，因此每一个窗口容器可以向它管理的窗口附加一份新的配置(主要为 WindowConfiguration相关的配置)，窗口容器将它的子容器保存在一个列表里，并实现了添加、删除子容器，以及遍历不同类型子容器的便捷方法。  
+### RootWindowContainer
+RootWindowContainer 是 WMS 管理所有窗口容器的根容器，系统中只存在一个，由 WMS 服务创建，但是会等待 ATMS 服务启动完成后再初始化，管理的是 DisplayContent（也是一个 windowContainer，对应着显示屏幕，对应唯一 ID，添加窗口时通过指定ID决定显示在哪个屏幕），每一个 DisplayContent 对应的是一个 Display 屏幕（包括物理屏幕和虚拟屏幕），同时实现了 DisplayListener 的接口，可以监听屏幕的添加、删除操作。
+### WindowContainerTransaction
+表示 WindowContainer上的操作集合，一般配合 WindowContainerTransactionCallback 一起，接收包含同步操作结果的事务。相比 Transaction 是在 SurfaceControl 上的操作集合，WindowContainerTransaction 是在 WindowContainer 上的操作集合，如 setBound 等修改 windowContainer 属性以及层级（如将转换父容器或在当前父容器中的位置）的操作，传入 windowContainer 对应的 token 并发送到服务端，最后由 callback 返回结果给客户端
 ## ShellTransition
 ### BlastSyncEngine
 ST 的核心，是 WMS 维护的一个成员对象，每次窗口事务切换都围绕他进行  
