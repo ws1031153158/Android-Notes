@@ -46,3 +46,7 @@ APT(Annotation Processot Tool)实现，编译器扫描处理注解信息，以 .
 WebView，与 Chromium 内核版本有关，新版 Chromium 内核内存泄漏问题已解决， Android 5.0开始将 Chromium WebView 迁移到了一个独立的 APP -- Android System WebView，低版本 Android 搭载的 Chromium 内核一般来说也不会太旧，所以出现内存泄漏的概率应该是比较小的。如果仍需要兼容这很小的一部分机型，可以先移除 WebView 组件，确保先调用到 onDetachedFromWindow 方法解注册，然后再通过 WebView.destroy 方法处理其它销毁逻辑。
 ## Resolve
 使用软引用/弱引用；及时关闭资源请求入口；及时注销监听、广播，及时取消异步任务；单例持有的 context 使用 applicationcontext，和应用 lifecycle 相同；内部类定义为 static，静态变量引用内部类实例或将实例化操作放在外部类静态方法中，内部类对外部类的引用使用 WeakReference。
+## Tips
+### == / equals
+==：对于基本数据类型（如 int、double），用于比较它们的值是否相等； 对于引用类型，比较的是对象的引用是否相同，即它们是否指向同一个内存地址（其实还是比较值，这里的值就是内存地址）     
+equals：是 Object 类中的方法，底层还是通过 == 实现的，被许多类（包括基本数据类型的包装类如 Integer、Double）重写，对于基本数据类型的包装类，比较的是对象的值是否相等，如 new Integer(5).equals(new Integer(5)) 返回 true，还要注意在使用 equals 之前，需要确保对象不是 null，此外，针对自己实现的类，需要重写 equals 逻辑
