@@ -9,6 +9,10 @@ start 开启线程，无需主动 run（jvm 会调，主动调则相当于调了
 一般是通过 Executor 来构建的（顶级接口是 Executor，但其只是工具，真正接口是 ExecutorService），也可获取系统的线程池使用。  
 1.减少了创建和销毁线程的次数，每个工作线程都可以被重复利用，可执行多个任务。  
 2.可以根据系统的承受能力，调整线程池中工作线线程的数目，防止因为消耗过多的内存，而把服务器累趴下(线程需要内存，开的越多，消耗内存越大，最后死机)。
+# ThreadLocal
+线程本地变量，访问这个变量的每个线程都会有这个变量的一个本地拷贝，多个线程操作这个变量，实际是在操作自己本地内存里面的变量，从而起到线程隔离的作用，避免了并发场景下的线程安全问题，一种空间换时间的方式   
+Thread 线程类有一个类型为 ThreadLocal.ThreadLocalMap 的实例变量 threadLocals，每个线程都有一个自己的 ThreadLocalMap，内部维护了 Entry 数组，每个 Entry 代表一个完整的对象，key 是 ThreadLocal 本身，value 是 ThreadLocal 的泛型对象值，并发多线程场景下，每个线程 Thread，在往 ThreadLocal 里设置值的时候，都是往自己的 ThreadLocalMap 里存，读也是以某个 ThreadLocal 作为引用，在自己的 map 里找对应的 key，从而可以实现了线程隔离  
+使用完，要手动调用 remove，否则可能会内存泄漏：ThreadLocalMap 使用 ThreadLocal 的弱引用作为 key，当 ThreadLocal 变量被手动设置为 null，即一个 ThreadLocal 没有外部强引用来引用它，GC 时，ThreadLocal 一定会被回收，ThreadLocalMap 中就会出现 key 为 null 的 Entry，就没有办法访问这些 key 为 null 的 Entry 的 value，如果当前线程再迟迟不结束的话(比如线程池的核心线程)，这些 value 就会一直存在一条强引用链：Thread 变量 -> Thread 对象 -> ThreaLocalMap -> Entry -> value -> Object 永远无法回收，造成内存泄漏
 # Lock
 ## basic
 JVM 给每个对象维护一个入口集（Entry Set，存储申请该对象内部锁的线程，如调用 notify 让对象等待集中的任一线程唤醒（可能造成假死（唤醒了未准备好的线程导致阻塞）），线程继续留在等待集，直到再次持有对应的内部锁，wait  把当前线程从等待集中移除）和等待集（Wait Set，存储对象上的等待线程，如 wait 将线程暂停(需和 while 一起使用)，释放内部锁时将线程存入对象等待集）。Lock.lock 不能放入 try（其他方法异常，finally 的 unlock 对未加锁对象解锁，调用 AQS.reyRelease 会抛出异常）。每个对象有一个 monitor 对象，就是这个对象的锁（对象锁），每个类也有个锁（类锁，通过对象锁实现，即Class的对象锁），自定义锁对象可以通过如 synchronized 方式，锁住代码块或某个对象。  
