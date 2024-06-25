@@ -53,7 +53,7 @@ Condition 实例是一个条件变量， 内部维护用于存储等待线程的
 4.Runnable 实现类实现完成后重新开始下一轮    
  ## CountDownLaunch
  使一个线程在等待另外一些线程完成各自工作之后，再继续执行。它相当于是一个计数器，这个计数器的初始值就是线程的数量（构造函数的参数），每当一个任务完成后，计数器的值就会减一（countDown），当计数器的值为 0 时，表示所有的线程都已经任务了，然后在 CountDownLatch 上等待的线程就可以恢复执行接下来的任务（ await 的线程就会被唤醒），也可以延迟唤醒，加一个延迟时间就可以实现，底层是 AQS  
- 与 Cyclicbarrier 的区别
+ 与 Cyclicbarrier 的区别   
 1）CyclicBarrier 的某个线程运行到某个点上之后，该线程即停止运行，直到所有的线程都到达了这个点，所有线程才重新运行；CountDownLatch则不是，某线程运行到某个点上之后，只是给某个数值 -1 而已，该线程继续运行  
 2）CyclicBarrier 只能唤起一个任务，CountDownLatch 可以唤起多个任务  
 3) CyclicBarrier 可重用，CountDownLatch 不可重用，计数值为 0 该 CountDownLatch 就不可再用了
