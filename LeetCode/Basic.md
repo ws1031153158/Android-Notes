@@ -60,7 +60,8 @@ if (index == n) {
   }  
 }  
 ## Tips
-temp 为 List，res 也为 List 时，res.add 需要为 add(new ArrayList<>(temp))
+1.temp 为 List，res 也为 List 时，res.add 需要为 add(new ArrayList<>(temp))  
+2.一般 temp 为 int，则 remove 的是 temp.size() - 1，如果为 char，则是 deleteCharAt(index)
 # 链表
 哑巴节点：dummy 的 next 指向 head，这样无需判断头节点特殊情况（需要 pre 的时候）  
 栈：先将节点入栈，当指定位置再出栈  
