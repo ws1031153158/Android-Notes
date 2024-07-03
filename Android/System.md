@@ -134,6 +134,11 @@ onDestroy：异常情况下（Activity被销毁重建，如改变屏幕方向/�
 1.要求 intent 必须含有 action，满足 manifest 中任一 action 即可  
 2.可以没有 category，只要有，则要满足所有 category 才能匹配  
 3.data 用于定义一些数据格式、长度等，匹配规则和 action 类似，但不强制要求有
+## 通信
+1.通过 intent.putExtra 携带一些基本数据类型或者 bundle 对象（封装数据或实现了接口的对象），在跳转时传递，但是有大小限制，因为 Binder 映射内存限制大小为 1M  
+2.通过持久化来实现，如写入 SQL、File、SP 等  
+3.实现内存共享，如静态成员，或匿名共享内存：将指定的物理内存分别映射到各个进程自己的虚拟地址空间中，从而便捷的实现进程间内存共享，可以通过 SharedMemory 等共享工具实现   
+4.也可以通过缓存中介一下，如 LruCache，发送方先把数据放入 LruCache，接收方从缓存中读取
 ## Fragment
 ### Lifecycle
 onAttach  
