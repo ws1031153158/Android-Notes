@@ -1,7 +1,12 @@
 # Zygote
 ## init
-系统启动时创建，用于 fork 出其他进程。
-通过 Socket 进行通信，新进程会继承 Zygote 虚拟机、类加载器等资源，避免重新加载。Zygote 主要工作是预加载和共享进程资源，提高启动速度。
+通过 Socket 进行通信，主要工作是预加载和共享进程资源，提高启动速度。
+## app_process
+负责启动 Zygote 进程和应用进程，主入口点是 main 方法，它是整个进程启动流程的起点，区分 zygote 和非空（className 不为空）进程，最终调用 runtime.start 启动（runtime 为 AppRuntime，继承 AndroidRunTime，也就是 ART）
+## AppRuntime
+初始化 JNI、初始化虚拟机、注册 JNI 方法，通过 JNI 调用 Zygote.mian，从这里开始进入到 Java 层
+## main
+完成资源的预加载，通过 Native 方法 fork 出系统服务（子线程中反射调用其 main 方法），为 Launcher 等启动做准备，新进程会继承 Zygote 虚拟机、类加载器等资源，避免重新加载，最后启动 Loop 开启监听
 ## 为何使用 Socket 不使用 Binder
 1.时序：Binder 驱动进程早于 init  进程加载，所需 service 早于 Zygote，但无法保证 Zygote 注册时已经初始化完成 。
 2.效率：使用 LocalSocket，减少了数据验证等环节。
@@ -227,3 +232,4 @@ IPC 中通过 contentResolver 获取另一进程的 contentProvider 提供的数
 3.数据更新类似广播机制，通用一个 contentObserver（也需要注册，通过 URI 描述，告知接收数据类型） 接收数据更新通知，由 provider 来发送通知，数据源由 SQLite 实现，数据也会被封装为 cursor  
 4.多线程操作，若针对内存则需要加锁实现同步，若底层为数据库数据则不需要，SQLite 会自己处理，但若是多个 SQLite 则还是需要自己处理同步    
 5.多进程操作会由请求队列按顺序执行  
+# Application
