@@ -1,12 +1,17 @@
 # 启动优化
-视觉：设置预览图、自定义 Theme 等优化用户等待加载时的观感。  
-绑大核：处理速度不同，绑大核就是让优先级（PR/IN，越低越好）高（容易获取时间片）线程、进程运行在频率高的 CPU上（一般 0-3 小核，4-7 大核）。  
-GC抑制：ART 不会时停，但也很消耗资源，原生处理为 2s 后提高 GC 阈值，可以减少次数。  
-onCreate：  
-异步init，将 init 分为多个子 task 放在子 thread（提交到线程池），task 之间无依赖关系。此外，若 ini t在 Application.onCreate 结束前完成，可用 CountDownLatch 等待 task 执行，或者根据依赖关系排序生成有向无环图，最后由优先级执行 task。任务可以分为（init 前、后，空闲，子、主线程等 task）。
-延迟init：优先级不高，可在启动完成后执行的 init task延迟到启动完成后执行（如 handler.postdelay），但延迟后的页面加载完成可能造成手势失效（如滑动）。  
+## 视觉
+设置预览图、自定义 Theme 等优化用户等待加载时的观感。  
+## 绑大核
+处理速度不同，绑大核就是让优先级（PR/IN，越低越好）高（容易获取时间片）线程、进程运行在频率高的 CPU上（一般 0-3 小核，4-7 大核）。  
+## GC抑制
+ART 不会时停，但也很消耗资源，原生处理为 2s 后提高 GC 阈值，可以减少次数。  
+## onCreate
+### 异步 init
+将 init 分为多个子 task 放在子 thread（提交到线程池），task 之间无依赖关系。此外，若 init 在 Application.onCreate 结束前完成，可用 CountDownLatch 等待 task 执行，或者根据依赖关系排序生成有向无环图，最后由优先级执行 task。任务可以分为（init 前、后，空闲，子、主线程等 task）。
+### 延迟 init
+优先级不高，可在启动完成后执行的 init task延迟到启动完成后执行（如 handler.postdelay），但延迟后的页面加载完成可能造成手势失效（如滑动）。  
 此外，init launcher 利用 IdleHandler 实现主线程空闲时执行任务，不影响用户操作。    
-状态：  
+## 状态
 冷启动：先创建进程，再启动应用，最后绘制UI。  
 暖启动：只重走 Activity 的生命周期。  
 热启动：通过 onStop 或 onPause 后直接 onResume。  
