@@ -53,7 +53,8 @@ dfs/bfs、拓扑排序、字典树（前缀树 trie）
 # 堆
 其实就是完全二叉树（某节点值总是不大于或不小于父节点值）进了一些调整，
 # 快慢指针
-head 不是虚节点，fast 初始化需要是 head.next（如找链表中点）
+1.head 不是虚节点，fast 需要注意初始化可能是 head.next，while 为 slow != fast，如找链表中点   
+2.判断环时，fast = head，while 为 fast != null
 # 位运算
 n & n - 1：表示二进制数去掉最右边的一个 1
 n & 1：表示对 2 取余
