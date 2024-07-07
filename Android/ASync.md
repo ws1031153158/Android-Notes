@@ -40,7 +40,7 @@ msg.target（每个 msg 对应一个 target，为对应 handler 的引用，也�
 ## Looper
 对 MessageQueue 进行轮询，没有新消息会一直堵塞，构造方法中会创建一个 MessageQueue  
 Looper.prepare 加上 Looper.loop（执行轮询，死循环，MessageQueue.next 返回 null 才会跳出循环，没有消息阻塞则会在 nativePollOnce 释放 cpu 资源进入休眠）来为线程创建一个 Looper，子线程手动创建 Looper 需要主动调用 quit 退出循环，退出后线程会立刻终止。
-一般 ANR 是由于规定时间没有完成指定任务，系统会抛出异常，looper 阻塞时不会占用过多 cpu 资源，也不存在指定时间，不会抛出 anr
+一般 ANR 是由于规定时间没有完成指定任务，系统会抛出异常，looper 阻塞时不会占用过多 cpu 资源，也不存在指定时间，不会抛出 anr，但对于业务添加的线程，尽量再确定不再使用时回收资源关闭 looper
 # RxJava
 异步数据处理库，也是一种扩展的观察者模式。  
 四大要素：Observable/Flowable（额外传入 backPresureStrategy 参数（ERROR(抛 missingBackPressureException异常)/BUFFER(扩大缓存池,default 128)/DROP(丢弃)/LATEST(消费者.request 传入需求数量，超过丢弃，可以接收最后一个事件））)（被观察者），Observer/Subscriber (实现了 observe r接口,多了unsubscribe 取消订阅,支持背压，异步中，被观察者发送事件速度快于观察者处理速度时，告诉上游被观察者降低发送速度)  
