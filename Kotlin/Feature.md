@@ -7,16 +7,16 @@ with：和 let 类似，内部 this 指代调用对象（可忽略），该结�
 apply：和 run 类似，返回值不同，返回传入对象本身（返回 this），一般用于对象初始化，对属性复制，或动态 inflate 一个 view 给 view 绑定数据  
 also：和 let 类似，it 指代，返回当前的这个对象（返回 this），一般可用于多个扩展函数链式调用  
 run：可看做 let 和 with 的结合体，只接受一个 lambda 函数作为参数。可以判空，且也是由 this 指代（可省略），以闭包形式返回最后一行代码的值。
+### noinline & crossinline
+1.函数类型参数本质是一个对象，而 inline 函数会将这个对象的代码展开铺平，消除其对象属性。   
+2.noinline 用于标记 inline 函数中的函数类型参数，被标记的函数类型参数不会被内联。   
+3.crossinline 是交叉内联，也是作用于内联函数的函数类型参数上，用途是强化函数类型参数的内联优化，使能被间接调用，并且被 crossinline 标记的 Lambda 中不能使用 return。
 ### 编译时常量
 变量的值固定不变，在编译时我们就可拿到这个变量的值。具体到代码中，就是变量使用 final 修饰，类型只能是字符串或基本类型，在声明时就赋值；在编译时，会直接拿这个变量值去替换变量名，是一种内联优化。
 ## 自定义
 在类的外面定义扩展函数，可在类内部/外部调用，无需修改类本身即可实现功能的扩展，不会作为成员添加到类中，可在接口中定义扩展，可定义成员扩展（不支持引用，且多个隐式访问可读性差）  
 Class.function，本质是静态函数，编译器将扩展函数转化为静态函数的调用。  
 可以扩展原生类，在 java 中调用会转化为静态函数的调用
-## noinline & crossinline
-1.函数类型参数本质是一个对象，而 inline 函数会将这个对象的代码展开铺平，消除其对象属性。   
-2.noinline 用于标记 inline 函数中的函数类型参数，被标记的函数类型参数不会被内联。   
-3.crossinline 是交叉内联，也是作用于内联函数的函数类型参数上，用途是强化函数类型参数的内联优化，使能被间接调用，并且被 crossinline 标记的 Lambda 中不能使用 return。
 ## Tips
 1.只有作为内联函数的参数的 Lambda 表达式中可以直接使用 return  
 2.Lambda 表达式中的 return 结束的不是内联函数自身，而是内联函数的调用函数  
@@ -45,13 +45,16 @@ object：修饰的类为静态类，方法和变量均为静态，可声明静�
 componion object：伴生对象，类中只存在一个，类似 java 静态方法、静态成员，调用的也必须是静态成员
 # Coroutine
 通过编译技术实现，不依赖任何 os/vm，编译时 suspend 函数传入 Continuation 接口，持有 context 和一个 resumeWith 作为参数，其中 resumeWith 会调用 invokeSuspend 协程启动或挂起时恢复，协程运行完成回调。这些代表之后要执行的方法，	编译器将协程体编译成匿名内部类，挂起函数调用位置对应挂起点，	类中实现 create 来创建协程体类实例，使用状态机，维护一个 label，控制 invokeSuspend 方法执行不同条件分支，挂起函数调用分布在不同分支，挂起函数传参为 this，即协程体自身。    
+## 优点
 线程会占用内存，且切换开销较大，线程的切换是在内核态下完成的，所以用户态中发起线程的切换会中断，进入内核态，所以需要内核的支持，用户级的线程切换时，才需要内核的支持，用户态和内核态其实就是CPU指令集权限级别的区别，用户态相当于应用程序，内核态相当于操作系统，多个协程可以共用一个线程，切换位于用户态。  
+## launch
 是一种通过挂起机制实现可中断的方法，通过栈实现层级调用
 .launch(Dispatchers.IO/Main/Default/Unconfined）{  
 }    
 //基于线程池实现，四种调度器，父类为	CoroutineScheduler，通过 dispatch 分配运行的线程  
 //launch 并不是一个顶层函数，它必须在一个对象中使用，是	CoroutineScope 接口（提供contexat，通过扩展函数管理协程）的扩展函数  
 此结构体实现一个协程，通过 withContext 切换运行线程，并在完成后返回当前线程，该方法为一个 suspend 方法，需要在协程或另一个 suspend 方法中调用。  
+## async
 async 也返回一个协程，不同点在于实现了 Deferred 接口，是一种延迟执行的方法，需要调用 .await（也是一个 suspend 方法）获取结果，一般用于同时开启多个任务，获取到所有返回结果再继续执行后面的任务。  
 默认启动，可以通过 start 手动开启，懒加载，在 launch 中传入CoroutineStart.LAZY，可以在 job.invokeOnCompletion 回调之后执行一些操作，正常和异常执行完毕都会走。  
 ## 启动模式
@@ -74,7 +77,7 @@ Dispatchers.Main：
 ## 作用域
 涉及到代码作用范围、协程 lifecycle 等    
 lifecycle：创建协程返回 job 对象，以此获取当前协程状态，有 isActive/isCompleted/isCancelled  
-GlobalScope：单例，全局作用域，不会自动结束执行（进程级别）  
+GlobalScope：单例，全局作用域，不会自动结束执行（进程级别），所以一般不用，如果用了需要及时注销，避免 OOM     
 MainScope：主线程作用域，也是全局范围  
 lifecycleScope：lifecycle 范围，用于 Activity 等 lifecycle 组件，destroy 时自动结束（绑定生命周期）  
 viewmodelScope：viewmodel 范围，被回收时自动结束  
