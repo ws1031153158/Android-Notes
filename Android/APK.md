@@ -31,3 +31,8 @@ System.loadLibaray 调用 Runtime.loadLibrary ：classloader 为 null 则去遍�
 拆分：multiDexEnabled 为 true 则打 apk 时 dex 拆分  
 解压&压缩：将 apk 中的除主 dex 以外的解压（load 第一次冷启动才会解压，后续获取缓存文件），压缩 zip  
 反射填充：将除主 dex 以外的加载，将加载后的内容通过反射的填充到原 classloader（DexPathList 维护的集合）（installSecondaryDexs 安装）（install 方法为入口，APK 文件中的 dex（优化为 odex）添加到应用的类加载器 PathClassLoader 中的 DexPathList 的 Element 数组）
+# 加密
+## 对称加密
+加密解密都使用同一个密钥，优点是方便快速，缺点是易受攻击，常见算法如 AES
+## 非对称加密
+加解密使用不同密钥的加密方式，优点是具有更高的安全性与可靠性，缺点是加解密速度较慢，常见算法如 RSA 
