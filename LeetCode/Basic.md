@@ -2,6 +2,7 @@
 Map、Set，不重复的集合作为某种标准，map 类似，值可以重复  
 # Array
 反转、temp、给定k次，或某个确定值，先看是否需要取余，分治法，对于某一个指定位置或其他阈值，分为左右分别处理  
+类型为数组，且返回为数组时，需要注意写法，如 return list.toArray(new int[list.size()][])
 # ArrayList
 new ArrayList<>() 构造时，括号中可以直接传入参数类型匹配的集合，如 map.values  
 类型为数组，且返回为数组时，要注意写法，如 return list.toAray(new int[list.size()][])
