@@ -59,4 +59,6 @@ equals：是 Object 类中的方法，底层还是通过 == 实现的，被许�
 1.实现 Cloneable 接口，重写 Object 类中 clone 方法，实现层层克隆的方法（对象的 clone 方法默认是浅拷贝）    
 2.通过序列化(Serializable)的方法，将对象写到流里，然后再从流中读取出来。虽然这种方法效率很低，但是这种方法才是真正意义上的深度克隆  
 # 动态代理
-只针对接口，在使用时，通过反射，生成调用对象的代理对象 -> Proxy.newProxyInstance(classLoader, Interfaces, InvocationHandler)，也可以通过传入的 handler 去自己实现代理中的操作
+只针对接口，在使用时，通过反射，生成调用对象的代理对象 -> Proxy.newProxyInstance(classLoader, Interfaces, InvocationHandler)，也可以通过传入的 handler 实现自定义 invoke 操作，这个也是核心，传入的 ，method 就是需要代理的方法，最终会调用，所以需要我们传入原始类的接口
+
+
