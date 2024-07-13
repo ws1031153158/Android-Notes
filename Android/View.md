@@ -1,6 +1,11 @@
 # ViewRoot & DecorView
 ViewRoot 就是 ViewRootImpl，连接Window 和 View（这里是DecorView），三大流程都由 ViewRootImpl 完成。  
 activity 创建完成后 将 decorview 添加到 window 中，创建 ViewRootImpl 并建立和 decorview 的连接（root.setView）
+## addView
+动态向布局中添加子视图（可以是 viewGroup）  
+1.父布局需要已初始化，已经 setContentView  
+2.已有父布局则不能重复被添加  
+3.要注意添加的线程需要是主线程
 # draw
 ## process
 activity 在 onCreate 时调用 setContentView，这一步将 layout 放入 window 关联 root 的 content 当中，接着 AT 会继续执行 handleResumeActivity，这里会调用 wm.addView，此方法中创建一个 viewRootimpl 来对应 decorView（一对一），并通过 root.setView 进行关联，接下来就到了三大流程环节了（performMeasure、performLayout、performDraw）。首先会走一次 requestLayout，root 会调用 performMeasure，接着走到 decorView 的 measure 方法中进而调用 onMeasure 以及 child 的 onMeasure，后续的 layout 和 draw 按顺序执行。
