@@ -75,7 +75,9 @@ if (index == n) {
     backtrack(index + 1)  
     remove(index)  
   }  
-}  
+}    
+1.需要注意递归结束条件  
+2.需要注意怎么递归，比如直接递归，还是要遍历递归（比如无序数组，找一个特定集合）
 ## Tips
 1.temp 为 List，res 也为 List 时，res.add 需要为 add(new ArrayList<>(temp))  
 2.一般 temp 为 int，则 remove 的是 temp.size() - 1，如果为 char，则是 deleteCharAt(index)
