@@ -126,12 +126,6 @@ Native Heap：PSS + SWAP PSS DIRETY
 ANR 问题本质是一个性能问题。ANR 机制实际上对应用程序主线程的限制，要求主线程在限定的时间内处理完一些最常见的操作(启动服务、处理广播、处理输入)， 如果处理超时，则认为主线程已经失去了响应其他操作的能力。  
 主线程中的耗时操作，譬如密集 CPU 运算、大量 IO、复杂界面布局等，都会降低应用程序的响应能力。  
 部分 ANR 问题是很难分析的，有时候由于系统底层的一些影响，导致消息调度失败，出现问题的场景又难以复现。 这类 ANR 问题往往需要花费大量的时间去了解系统的一些行为，超出了 ANR 机制本身的范畴。有一些 ANR 问题很难调查清楚，因为整个系统不稳定的因素很多，例如 Linux Kernel 本身的 Bug 引起的内存碎片过多、硬件损坏等。这类比较底层的原因引起的 ANR 问题往往无从查起。  
-## Tips
-主线程 sleep 不一定 ANR，休眠期间没有其他消息需要处理则不会，若此时有点击事件或其他线程传来的更新 UI 请求则可能会 ANR  
-# Runtime Crach
-app 不会闪退，但进程被杀掉，不会接受任何事件，可以通过 getDefaultUncaughtExceptionHandler 交给系统处理（如捕获到异常为空）。  
-try-catch 可以捕获主线程异常。 ，UncaughtExceptionHandler 可以捕获子线程异常，异常发生回调 uncaughtException，捕获到的异常为 Throwable。  
-自定义 crashHandler 继承 Thread.UncaughtExceptionHandler，初始化进行，Thread.setDefaultUncaughtExceptionHandler(this) 操作，在 unCaughtException 回调中处理上报异常（有可能此时已未响应，需要创建 looper）。
 ## Application
 1.死锁  
 2.主线程调用 thread 的 join()方法、sleep()方法、wait()方法或者等待线程锁的时候  
@@ -157,10 +151,10 @@ try-catch 可以捕获主线程异常。 ，UncaughtExceptionHandler 可以捕�
 3.Window 错乱导致 Input 超时  
 4.ContentProvider 对应的进程频繁崩溃，也会杀掉当前进程  
 5.整机低内存  
-6.整机 CPU 占用高  
+6.整机 CPU 占用高：查看是总使用率是否过高，同时需要关注缺页次数（访问的页面不在内存时，会产生一次缺页中断，需要调入主存，一次调入次数加一），xxx minor 表示高速缓存中的缺页次数，可以理解为进程在做内存访问，xxx major 表示内存的缺页次数，可以理解为进程在做 IO 操作   
 7.整机 IO 使用率高  
 8.SurfaceFlinger 超时  
-9.系统冻结功能出现 Bug  
+9.系统冻结功能出现 Bug：应用是否处于 D 状态（TASK_UNINTERRUPTIBLE，不可中断的睡眠状态，通常是由于它正在执行一个不能中断的 I/O 操作，如磁盘读写、网络传输等）    
 10.System Server 中 WatchDog 出现 ANR  
 11.整机触发温控限制频率
 ## Native Crash
@@ -170,6 +164,12 @@ try-catch 可以捕获主线程异常。 ，UncaughtExceptionHandler 可以捕�
 1.从内核态返回用户态前进行检测。  
 2.在内核态中，从睡眠状态被唤醒时进行检测。    
 有新信号时进入信号处理：处理运行在用户态，处理前，内核将当前栈内数据拷贝到用户栈，修改指令寄存器（eip）并指向信号处理函数，之后返回用户态，执行对应处理函数，处理完成后返回内核态，检查是否有信号未处理。所有信号处理完成，恢复内核栈（用户栈拷贝回来），恢复指令寄存器（eip）并指向中断前的运行位置，最后回到用户态继续执行进程。
+## Tips
+主线程 sleep 不一定 ANR，休眠期间没有其他消息需要处理则不会，若此时有点击事件或其他线程传来的更新 UI 请求则可能会 ANR  
+# Runtime Crach
+app 不会闪退，但进程被杀掉，不会接受任何事件，可以通过 getDefaultUncaughtExceptionHandler 交给系统处理（如捕获到异常为空）。  
+try-catch 可以捕获主线程异常。 ，UncaughtExceptionHandler 可以捕获子线程异常，异常发生回调 uncaughtException，捕获到的异常为 Throwable。  
+自定义 crashHandler 继承 Thread.UncaughtExceptionHandler，初始化进行，Thread.setDefaultUncaughtExceptionHandler(this) 操作，在 unCaughtException 回调中处理上报异常（有可能此时已未响应，需要创建 looper）。
 # System trace
 ## MainThread/RenderThread
 一帧流程（60fps | 16.6ms）：  
