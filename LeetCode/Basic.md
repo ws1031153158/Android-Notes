@@ -6,6 +6,10 @@ Map、Set，不重复的集合作为某种标准，map 类似，值可以重复
 # ArrayList
 new ArrayList<>() 构造时，括号中可以直接传入参数类型匹配的集合，如 map.values  
 类型为数组，且返回为数组时，要注意写法，如 return list.toAray(new int[list.size()][])，add 时也不一样，如 list.add(nums[1], nums)
+# Queue
+Queue<T> que = new LinkedList<>()  
+poll 出队  
+add 入队
 # 最大公约数
 （a(x, y) -> y > 0 ? a(y, x % y) : x  
 # 裴蜀定理
