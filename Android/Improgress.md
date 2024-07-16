@@ -123,11 +123,46 @@ SWAP PSS：释放后其他进程可以使用的内存，所以只能看到 Dirty
 Native Heap：PSS + SWAP PSS DIRETY  
 详细内存分布 -> APP 内存（图片、java堆、）-> 总内存 -> 对象内存（view、activity、viewimpl，可当做内存泄漏的依据）  
 # ANR
+ANR 问题本质是一个性能问题。ANR 机制实际上对应用程序主线程的限制，要求主线程在限定的时间内处理完一些最常见的操作(启动服务、处理广播、处理输入)， 如果处理超时，则认为主线程已经失去了响应其他操作的能力。  
+主线程中的耗时操作，譬如密集 CPU 运算、大量 IO、复杂界面布局等，都会降低应用程序的响应能力。  
+部分 ANR 问题是很难分析的，有时候由于系统底层的一些影响，导致消息调度失败，出现问题的场景又难以复现。 这类 ANR 问题往往需要花费大量的时间去了解系统的一些行为，超出了 ANR 机制本身的范畴。有一些 ANR 问题很难调查清楚，因为整个系统不稳定的因素很多，例如 Linux Kernel 本身的 Bug 引起的内存碎片过多、硬件损坏等。这类比较底层的原因引起的 ANR 问题往往无从查起。  
+## Tips
 主线程 sleep 不一定 ANR，休眠期间没有其他消息需要处理则不会，若此时有点击事件或其他线程传来的更新 UI 请求则可能会 ANR  
 # Runtime Crach
 app 不会闪退，但进程被杀掉，不会接受任何事件，可以通过 getDefaultUncaughtExceptionHandler 交给系统处理（如捕获到异常为空）。  
 try-catch 可以捕获主线程异常。 ，UncaughtExceptionHandler 可以捕获子线程异常，异常发生回调 uncaughtException，捕获到的异常为 Throwable。  
 自定义 crashHandler 继承 Thread.UncaughtExceptionHandler，初始化进行，Thread.setDefaultUncaughtExceptionHandler(this) 操作，在 unCaughtException 回调中处理上报异常（有可能此时已未响应，需要创建 looper）。
+## Application
+1.死锁  
+2.主线程调用 thread 的 join()方法、sleep()方法、wait()方法或者等待线程锁的时候  
+3.主线程阻塞在 nSyncDraw  
+4.主线程耗时操作，如复杂的 layout，庞大的 for 循环，IO 等  
+5.主线程被子线程同步锁 block  
+6.主线程等待子线程超时  
+7.主线程 Activity 生命周期函数执行超时  
+8.主线程 Service 生命周期函数执行超时  
+9.主线程 Broadcast.onReceive 函数执行超时（即使调用了 goAsync ）  
+10.渲染线程耗时  
+11.耗时的网络访问  
+12.大量的数据读写  
+13.数据库操作  
+14.硬件操作（比如 Camera)  
+15.service binder 的数量达到上限  
+16.其它线程终止或崩溃导致主线程一直等待  
+17.Dump 内存操作  
+18.大量 SharedPerference 同时读写  
+## System Server
+1.与 SystemServer 进行 Binder 通信，SystemServer 执行耗时：方法本身执行耗时导致超时，或者 SystemServer Binder 锁竞争太多，导致等锁超时  
+2.等待其他进程返回超时，比如从其他进程的 ContentProvider 中获取数据超时  
+3.Window 错乱导致 Input 超时  
+4.ContentProvider 对应的进程频繁崩溃，也会杀掉当前进程  
+5.整机低内存  
+6.整机 CPU 占用高  
+7.整机 IO 使用率高  
+8.SurfaceFlinger 超时  
+9.系统冻结功能出现 Bug  
+10.System Server 中 WatchDog 出现 ANR  
+11.整机触发温控限制频率
 ## Native Crash
 原生采用信号（软中断信号）量中断处理的捕捉方式，程序运行在用户态，系统调用、中断或异常时进入内核态，信号涉及两种状态转换。  
 接收：接收信号由内核代理，收到信号会放到对应进程信号队列中，向进程发送一个中断，使其进入内核态。（此时信号只在队列中，对进程来说暂时不知道信号到来）。  
