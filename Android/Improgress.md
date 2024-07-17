@@ -209,6 +209,19 @@ tips：renderThread 对应硬件加速（默认开启），开启硬件加速后
 处理器时钟频率和 I/O 缓冲被停止(执行引擎和 I/0 缓冲已经没有时钟频率)，可节约 70%  CPU 和平台能耗，从 C2 切到 C0 需要 100 ns以上。  
 4.C3 状态（深度睡眠）  
 总线频率和 PLL 均被锁定，在多核心系统下，缓存无效，在单核心系统下，内存被关闭，但缓存仍有效。可节省 70%  CPU 功耗，平台功耗比 C2 状态大，唤醒时间需要 50 ns  
+## Task
+### Sleep
+白色，有两种情况：  
+1.nativePoll 这种，一般属于主动 Sleep，因为没有消息处理了，所以进入 Sleep 状态等待 Message，一般是正常的，不需要关注，比如两帧之间的那段，就是主动 sleep  
+2.被动 Sleep 一般是由用户主动调用 sleep，或者用 Binder 与其他进程进行通信，这个是我们最常见的，也是分析性能问题的时候经常会遇到的，需要重点关注，通过 binder transaction 来查看 Binder 调用信息，或者如果没有 binder 信息，那么就需要去看在等待什么线程
+### Running
+绿色，需要关注两点：  
+1.是否应用的本身逻辑耗时，比如某些代码逻辑导致  
+2.是否跑在了对应的核心上，可能跑在了小核上，一般 UI 线程和 RenderThread 都是在大核上  
+### Runnable
+蓝色，一般线程的状态转换是这样子的：  
+![image](https://github.com/user-attachments/assets/e78d2c1a-1c3c-468a-a0b9-914c4ad62b16)
+
 # HWC
 HWC（Hardware Composer）是 Android 中进行窗口（Layer）合成和显示的 HAL 层模块，其实现是特定于设备的，而且通常由显示设备制造商 (OEM)完成，为 SurfaceFlinger 服务提供硬件支持。   
 SurfaceFlinger 可以使用 OpenGL ES 合成 Layer，这需要占用并消耗 GPU 资源。大多数 GPU 都没有针对图层合成进行优化，当 SurfaceFlinger 通过 GPU 合成图层时，应用程序无法使用 GPU 进行自己的渲染。而 HWC 通过硬件设备进行图层合成，可以减轻 GPU 的合成压力 。  
