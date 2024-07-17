@@ -11,6 +11,9 @@ new ArrayList<>() 构造时，括号中可以直接传入参数类型匹配的�
 Queue<T> que = new LinkedList<>()  
 poll 出队  
 add 入队
+# StringBuffer
+添加是 append  
+删除是 deleteAt(index)
 # 最大公约数
 （a(x, y) -> y > 0 ? a(y, x % y) : x  
 # 裴蜀定理
