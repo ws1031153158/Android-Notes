@@ -220,8 +220,8 @@ tips：renderThread 对应硬件加速（默认开启），开启硬件加速后
 2.是否跑在了对应的核心上，可能跑在了小核上，一般 UI 线程和 RenderThread 都是在大核上  
 ### Runnable
 蓝色，一般线程的状态转换是这样子的：  
-![image](https://github.com/user-attachments/assets/e78d2c1a-1c3c-468a-a0b9-914c4ad62b16)
-
+![image](https://github.com/user-attachments/assets/e78d2c1a-1c3c-468a-a0b9-914c4ad62b16)    
+正常情况下，应用进入 Runnable 状态之后，会马上被调度器调度，进入 Running 状态，开始干活；但是在系统繁忙的时候，应用就会有大量的时间在 Runnable 状态，因为 cpu 已经跑满，各种任务都需要排队等待调度，如果应用启动的时候出现大量的 Runnable 任务，那么需要查看系统的状态
 # HWC
 HWC（Hardware Composer）是 Android 中进行窗口（Layer）合成和显示的 HAL 层模块，其实现是特定于设备的，而且通常由显示设备制造商 (OEM)完成，为 SurfaceFlinger 服务提供硬件支持。   
 SurfaceFlinger 可以使用 OpenGL ES 合成 Layer，这需要占用并消耗 GPU 资源。大多数 GPU 都没有针对图层合成进行优化，当 SurfaceFlinger 通过 GPU 合成图层时，应用程序无法使用 GPU 进行自己的渲染。而 HWC 通过硬件设备进行图层合成，可以减轻 GPU 的合成压力 。  
