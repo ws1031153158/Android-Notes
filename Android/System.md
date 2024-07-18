@@ -1,15 +1,15 @@
-# 应用启动流程
-## Input
-
-## Zygote
-### APP
-## Handler
-## AMS
-## Application & Activity
-## Layout & Draw
-## RenderThread
-## SF
-# Zygote
+# Input
+input 核心是 InputReader 和 InputDispatcher，InputReader 和 InputDispatcher 是跑在 SystemServer进程中的两个 native 循环线程，负责读取和分发 Input 事件，整个处理过程大致流程如下：  
+1.InputReader 负责从 EventHub 里面把 Input 事件读取出来，然后交给 InputDispatcher 进行事件分发  
+2.InputDispatcher 在拿到 InputReader 获取的事件之后，将事件放入 iq ，寻找并分发到目标窗口    
+3.InboundQueue队列（iq）中放着 InputDispatcher 从 InputReader 中拿到的 input 事件  
+4.OutboundQueue（oq）队列里面放的是即将要被派发给各个目标窗口 App 的事件  
+5.WaitQueue 队列里面记录的是已经派发给 App（wq），但是 App 还在处理没有返回处理成功的事件  
+6.PendingInputEventQueue 队列（aq）中记录的是应用需要处理的 Input 事件，这里 input 事件已经传递到了应用进程  
+7.deliverInputEvent 标识 App UI Thread 被 Input 事件唤醒  
+8.InputResponse 标识 Input 事件区域，一个 Input_Down 事件 + 若干个 Input_Move 事件 + 一个 Input_Up 事件的处理阶段都被算到了这里  
+9.App 响应处理 Input 事件，内部会在其界面 View 树中传递处理，由 DecorView 遍历所有子 View  
+10.事件处理完成后会调用 finishInputEvent 结束应用对触控事件处理逻辑，通过 JNI 调用到 native 层通知 InputDispatcher 事件处理完成，从 wq 队列中及时移除待处理事件以免 ANR
 ## init
 通过 Socket 进行通信，主要工作是预加载和共享进程资源，提高启动速度。
 ## app_process
@@ -95,7 +95,7 @@ Buffer 申请在 APP 侧，dequeue，queue，acquire，release 操作均由 APP 
 将 buffer 和窗口信息更新同步，一次事务中可以传递 buffer 以及 对应的 layer 窗口大小等图层属性给 SF，同时可以将事务跨进程传递给系统服务，系统服务根据需要将窗口的几何修改融入到该事务一并提交，保证在同一帧生效，最后 
 relayoutWindow (从 WMS 申请 window layout， 创建 sc 并通过他创建 BBQ)，接着通过 JNI 接口创建 native 对象（创建 bufferQueue 并设置监听），最终创建 suface 对象。  
 ## Tips
-在应用冷启动的 transition 流程中，应用的展示 window 是这样子的：首先桌面添加一层遮罩，充当 surface，如果应用配置了 Application 的默认启动图，在自身绘制完成，内容准备好之后会通知 WM 去 remove 掉 startWindow 来展示这个，往往伴随着应用的 finish draw locked，或者 WM 侧在 finishDraw 之后，也会返回给桌面 surface 用来展示
+在应用冷启动的 transition 流程中，应用的展示 window 是这样子的：首先桌面添加一层遮罩，充当 surface，如果应用对 Application 配置了 splash screen，在自身绘制完成，内容准备好之后会通知 WM 去 remove 掉 startWindow 来展示这个，往往伴随着应用的 finish draw locked，或者 WM 侧在 finishDraw 之后，也会返回给桌面 surface 用来展示
 # SurfaceFlinger
 ## foundation
 系统中只有一个实例，负责给 C 端分配窗口。
