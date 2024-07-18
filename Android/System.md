@@ -110,6 +110,16 @@ relayoutWindow (从 WMS 申请 window layout， 创建 sc 并通过他创建 BBQ
 1.APK 需要创建窗口时，会通过 WM.addView 创建一个 ViewRoot（ViewRootImpl） 对象，其中会通过 SF 无参构造函数创建 SF 对象，此时只是一个空壳（窗口需初始化后才对应一个屏幕显示的窗口，本质是给 SF 分配一段屏幕缓冲区的内存），需要向 WMS 请求（将空对象传给 WMS），返回一个完整对象。  
 2.WMS 收到请求后，通过 SF 的 JNI 调用到 SF_client 驱动，请求 SF 进程创建指定窗口，SF 创建一段屏幕缓冲区并关联该窗口，将地址返回给 WMS，WMS 通过此地址初始化 SF 对象 返回给 APK。  
 3.APK 有了 SF 后就可以进行一系列的绘制操作，如矩阵、文本、图片等
+## RenderThread
+Activity 初始化流程中，ViewRootImpl 完成了对界面的 measure、layout 和 draw 等绘制流程后，用户依然还是看不到屏幕上显示的应用界面内容，界面还需要经过 RenderThread 线程的渲染处理，渲染完成后，还需要通过 Binder 调用，上帧给 surfaceflinger 进程中进行合成后送显才能最终显示到屏幕上  
+### 硬件加速
+1.从 DecorView 出发，递归遍历 View 控件树，记录每个 View 节点的 drawOp 绘制操作命令，完成绘制命令树的构建（遍历时记录 onDraw 中的绘制操作，创建命令节点保存到 List 中）  
+2.JNI 调用同步Java 层构建的绘制命令树到 Native 层的 RenderThread 渲染线程，并唤醒渲染线程利用 OpenGL 执行渲染任务
+### 渲染
+UI 线程利用 RenderProxy 向 RenderThread 线程发送一个任务请求，RenderThread 被唤醒，开始渲染，大致流程如下：  
+1.遍历 View 树上每一个命令节点，执行 prepareTreeImpl 函数，实现同步绘制命令树的操作  
+2.调用 OpenGL 库 API 使用 GPU，按照构建好的绘制命令完成界面的渲染  
+3.将前面已经绘制渲染好的图形缓冲区 Binder 上帧给 SurfaceFlinger 合成和显示
 ## Tips
 1.SF 本质上只表示一个平面，而不是一段数据，Android 使用 Skia 绘图驱动库（C/C++）进行各种平面绘制。  
 2.SF 包含 lockCanvas 函数，APK 通过此函数返回的 Canvas 对象的各种绘制函数完成平面绘制。
