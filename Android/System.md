@@ -10,14 +10,16 @@ input 核心是 InputReader 和 InputDispatcher，InputReader 和 InputDispatche
 8.InputResponse 标识 Input 事件区域，一个 Input_Down 事件 + 若干个 Input_Move 事件 + 一个 Input_Up 事件的处理阶段都被算到了这里  
 9.App 响应处理 Input 事件，内部会在其界面 View 树中传递处理，由 DecorView 遍历所有子 View  
 10.事件处理完成后会调用 finishInputEvent 结束应用对触控事件处理逻辑，通过 JNI 调用到 native 层通知 InputDispatcher 事件处理完成，从 wq 队列中及时移除待处理事件以免 ANR
+# Zygote
 ## init
-通过 Socket 进行通信，主要工作是预加载和共享进程资源，提高启动速度。
+通过 Socket 进行通信，主要工作是预加载和共享进程资源，提高启动速度。  
 ## app_process
-负责启动 Zygote 进程和应用进程，主入口点是 main 方法，它是整个进程启动流程的起点，区分 zygote 和非空（className 不为空）进程，最终调用 runtime.start 启动（runtime 为 AppRuntime，继承 AndroidRunTime，也就是 ART）
+负责启动 Zygote 进程和应用进程，主入口点是 main 方法，它是整个进程启动流程的起点，区分 zygote 和非空（className 不为空）进程，其中创建服务端s ocket，并预加载系统资源和框架类，  并且也会进入一个死循环进行监听 AMS 的请求
+最终调用 runtime.start 启动（runtime 为 AppRuntime，继承 AndroidRunTime，也就是 ART）
 ## AppRuntime
 初始化 JNI、初始化虚拟机、注册 JNI 方法，通过 JNI 调用 Zygote.mian，从这里开始进入到 Java 层
 ## main
-完成资源的预加载，通过 Native 方法 fork 出系统服务（子线程中反射调用其 main 方法），为 Launcher 等启动做准备，新进程会继承 Zygote 虚拟机、类加载器等资源，避免重新加载，最后启动 Loop 开启监听
+完成资源的预加载，通过 Native 方法 fork 出系统服务（子线程中反射创建 ActivityThread，并调用其 main 方法，注意，这里的线程是应用进程的 binder 线程），为 Launcher 等启动做准备，新进程会继承 Zygote 虚拟机、类加载器等资源，避免重新加载，最后启动 Loop 开启监听
 ## 为何使用 Socket 不使用 Binder
 1.时序：Binder 驱动进程早于 init  进程加载，所需 service 早于 Zygote，但无法保证 Zygote 注册时已经初始化完成 。
 2.效率：使用 LocalSocket，减少了数据验证等环节。
@@ -247,12 +249,19 @@ IPC 中通过 contentResolver 获取另一进程的 contentProvider 提供的数
 5.多进程操作会由请求队列按顺序执行  
 # Application
 应用初始化启动时由系统创建，存储一些系统信息
+## Init
+1.在 ActivityThread.mian 中，开启主线程 loop 之前，会通过 binder 调用 AMS.attachApplication，将自己注册进去  
+2.之后切到 AMS 进程，执行 bindApplication，随后向应用主线程 post 消息通知 bind 完成  
+3.回到应用进程，根据框架传入的 ApplicationInfo 信息创建应用 APK 对应的 LoadedApk 对象，创建 Application 的 Context 对象  
+4.创建类加载器 ClassLoader 对象并触发 Art 虚拟机执行加载应用 APK 的 Dex 文件  
+5.通过 LoadedApk 加载应用 APK 的 Resource 资源  
+6.调用 LoadedApk.makeApplication，创建应用的 Application 对象  
+7.执行应用 Application.onCreate
+## attachBaseContext
+在 onCreate 之前被调用，作用是向 Context 中添加或修改一些信息，一般执行一些初始化如创建全局对象（数据库等）、设置默认语言等
 ## LifeCycle
 1.onConfiguration：配置更改时回调  
 2.onCreate：创建时回调  
 3.onTerminal：结束时回调  
 4.onLowMemory：内存不足时回调  
 5.onTrimMemory：内存清理时回调
-## Init
-## attachBaseContext
-在 onCreate 之前被调用，作用是向 Context 中添加或修改一些信息，一般执行一些初始化如创建全局对象（数据库等）、设置默认语言等
