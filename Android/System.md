@@ -133,6 +133,18 @@ Ztgote fork 出PMS 进程，在 PMS 的 main 函数中完成初始化加载。
 5.获取 AMS 对象，并执行 attachApplication 函数，创建并 bind application  
 6.instrumentation 中来 new 一个 activity，activity 执行 attach，来 bind contextImpl（也就是维护的 mBase 对象）  
 7.初始化 window 之后执行 performLaunch、resumeLaunch，最终 makeVisible  
+## Init APP Launch activity
+AMS 收到应用进程的 attachApplication 注册请求后，先通过 binder 调用 IApplicationThread.bindApplication 接口，触发应用进程在主线程执行 handleBindeApplication 初始化操作，然后继续执行启动应用Activity，应用进程这边在收到系统 binder 调用后，做进一步初始化和创建流程（Create 和 Resume）    
+### Create
+1.创建 Activity 的 Context  
+2.通过反射创建 Activity 对象  
+3.执行 Activity.attach 动作，其中会创建应用窗口的 PhoneWindow 对象并设置 WindowManager    
+4.执行应用 Activity.onCreate 生命周期函数，并在 setContentView 中创建窗口的 DecorView   
+### Resume
+1.执行应用 Activity.onResume  
+2.执行 WindowManager.addView  开启视图绘制逻辑  
+3.创建 Activity 的 ViewRootImpl 对象    
+4.执行 ViewRootImpl.setView 开启 UI 界面绘制动作
 ## Launch activity normal
 1.context 调用 startActivity，实现类 contextImpl 去执行 startActivity  
 2.调用 startActivityForResult ，不过已经被弃用了，可以用 ActivityResult API 来实现  
