@@ -1,3 +1,14 @@
+# 应用启动流程
+## Input
+
+## Zygote
+### APP
+## Handler
+## AMS
+## Application & Activity
+## Layout & Draw
+## RenderThread
+## SF
 # Zygote
 ## init
 通过 Socket 进行通信，主要工作是预加载和共享进程资源，提高启动速度。
