@@ -253,5 +253,6 @@ IPC 中通过 contentResolver 获取另一进程的 contentProvider 提供的数
 3.onTerminal：结束时回调  
 4.onLowMemory：内存不足时回调  
 5.onTrimMemory：内存清理时回调
+## Init
 ## attachBaseContext
 在 onCreate 之前被调用，作用是向 Context 中添加或修改一些信息，一般执行一些初始化如创建全局对象（数据库等）、设置默认语言等
