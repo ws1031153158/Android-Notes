@@ -94,6 +94,8 @@ Buffer 申请在 APP 侧，dequeue，queue，acquire，release 操作均由 APP 
 界面不显示会释放 BlastBufferQueue 对象，减少内存。  
 将 buffer 和窗口信息更新同步，一次事务中可以传递 buffer 以及 对应的 layer 窗口大小等图层属性给 SF，同时可以将事务跨进程传递给系统服务，系统服务根据需要将窗口的几何修改融入到该事务一并提交，保证在同一帧生效，最后 
 relayoutWindow (从 WMS 申请 window layout， 创建 sc 并通过他创建 BBQ)，接着通过 JNI 接口创建 native 对象（创建 bufferQueue 并设置监听），最终创建 suface 对象。  
+## Tips
+在应用冷启动的 transition 流程中，应用的展示 window 是这样子的：首先桌面添加一层遮罩，充当 surface，如果应用配置了 Application 的默认启动图，在自身绘制完成，内容准备好之后会通知 WM 去 remove 掉 startWindow 来展示这个，往往伴随着应用的 finish draw locked，或者 WM 侧在 finishDraw 之后，也会返回给桌面 surface 用来展示
 # SurfaceFlinger
 ## foundation
 系统中只有一个实例，负责给 C 端分配窗口。
