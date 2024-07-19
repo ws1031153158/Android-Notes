@@ -210,6 +210,13 @@ tips：renderThread 对应硬件加速（默认开启），开启硬件加速后
 承上：接收和处理 App 的更新消息和回调，等 Vsync 到来统一处理。如集中处理 Input 、Animation、Traversal( measure、layout、draw ) ，判断卡顿掉帧情况，记录 CallBack 耗时等  
 启下：接收 Vsync 事件回调，请求 Vsync 信号  
 线程单例要和一个 Looper 绑定（内部有一个 Handler 所以需要绑定 Looper ），定义了一个 FrameCallback interface，当 Vsync 到来，doFrame 被调用，在固定的时间中断。
+### 流程
+应用一帧渲染的整体流程，从执行顺序的角度来看是从 Choreographer 收到 Vsync 开始，到 SurfaceFlinger/HWC 合成一帧结束（后面还包含屏幕显示部分）  
+![image](https://github.com/user-attachments/assets/02ca4c5f-4096-49e6-ba34-fa01907fb8c0)  
+从 System 角度看是：  
+![image](https://github.com/user-attachments/assets/d8bf43fd-63a3-4272-8371-b2144f93f30a)
+
+
 ## CPU
 1.C0 状态（激活）  
 最大工作状态，可以接收指令和处理数据  。  
