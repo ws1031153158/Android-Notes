@@ -14,6 +14,9 @@ add 入队
 # StringBuffer
 添加是 append  
 删除是 deleteAt(index)
+# Random
+Random r = new Random()  
+int num = r.nextInt()
 # 最大公约数
 （a(x, y) -> y > 0 ? a(y, x % y) : x  
 # 裴蜀定理
