@@ -32,9 +32,9 @@ meta-data 当中加入了一个 tools:node= remove
 当出现内存偏高或其他内存相关的问题时，我们可以通过 meminfo 来缩小范围、查找潜在的风险点  
 获取方式：adb shell dumpsys meminfo <pkg>  
 meminfo统计：  
-[图片]    
+![image](https://github.com/user-attachments/assets/2c26f42e-2494-4f9b-80ef-0460746b48ef)  
 对照 meminfo 来看：  
-[图片]  
+  ![image](https://github.com/user-attachments/assets/594eb71d-63d4-4701-9ff7-118565932f28)  
 纵轴：  
 ![image](https://github.com/user-attachments/assets/52028878-2de4-4f24-8b63-7c674513f70e)  
 横轴：  
