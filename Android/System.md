@@ -161,6 +161,17 @@ AMS 收到应用进程的 attachApplication 注册请求后，先通过 binder �
 3.instrumentation 执行  execStartActivity  
 4.ATMS 执行 startActivity（此时 AIDL 通信到 S 端了），调用到 resumeTopActivity，如果顶层 activity 为 null，则通过回调 Binder 通信到 ActivityThread 执行 transaction，其中的 handler （内部维护一个对象 H） 执行 sendMessage，由 AT 来 handleMessage，并执行 performLaunchActivity，在这一步获取 activity 信息，需要的话会使用 classLoader 来创建 activity，若第一次启动，则创建 application。  
 5.looper.prepareMainLooper 开始消息循环，最终调用 activity 的 onCreate  
+## Home Launcher & APP Activity
+1.Home 有自启机制，TouchInteractionService 绑定在 systemUI，在 onServiceConnected 回调中，会有重启的逻辑，也就是说 SystemUI 设置了死亡监听，在死亡监听中看到重新绑定的逻辑，进而在桌面被杀的时候重新拉起来，三方目前基本是没有保活能力的   
+## System APP & Normal APP
+### 存放位置不同
+/system/priv-app/ 存放系统应用，/system/app/ 存放普通系统应用，/data/app/ 存放普通应用目录（预装应用）   
+### 权限不同
+对于 manifest 权限级别而言，普通应用为 normal，普通系统应用为 signature，系统应用为 signatureOrSystem 或者 signature|privileged（系统应用不可卸载）  
+### 签名不一致
+系统应用通过打包生成正式 ap k时，会使用公司的密钥进行签名，应用在安装的时候会校验密钥，调用系统 installer 进行安装的时候会解析这类信息  
+系统应用(桌面)可以访问系统中的一些 hide API（非 SDK API）  
+signature 现在主要用来表示跟平台签名一致
 ## onNewIntent
 1.activity launchMode 设置为 singleTop，并处于栈顶时启动，或 startActivity 时设置了 FLAG_ACTIVITY_SINGLE_TOP，不再创建实例，直接使用原来的，并会调用 onNewIntent，后续生命周期中其他方法也会基于此方法中传递的参数调用。（onPause -> onNewIntent -> onResume）。  
 2.launchMode 为 singleTask 时，activity 不在栈顶，再次启动会调用 onNewIntent，onStart -> onNewIntent -> onResume，若已经在栈顶，则与 singleTop 类似。  
