@@ -41,7 +41,10 @@ meminfo统计：
 ![image](https://github.com/user-attachments/assets/95f30ffb-ce1a-4321-a7f1-851bd3f5fc59)  
 App Summary:  
 ![image](https://github.com/user-attachments/assets/2a57c902-f440-455b-bd04-0697365c48e7)
-## hprof
+### hprof
+heap profile，是某一时间点，应用进程堆转存生成的文件，包含了这一时间点的内存快照；当需要进一步拆解内存、定位问题时，进行获取并分析    
+![image](https://github.com/user-attachments/assets/4ba978f7-7d5d-44a4-b06a-24d684ff6145)
+
 ## 内存抖动
 短时间内频繁大量创建临时对象，会频繁 GC，无论哪种方式实现的GC在执行时都不可避免的需要 STW（Stop The World），STW 意味着所有的工作线程都将被暂停，虽然时间很短，但终究会存在时间成本，一两次内存回收不易被察觉，但多次内存回收集中在短时间内爆发，这就会造成较大程度的界面卡顿风险。   
 尽量避免在循环体中创建对象、尽量不要在自定义 View 的 onDraw 方法中创建对象（会被频繁调用）、对于可复用对象，可以考虑使用对象池缓存。  
