@@ -27,6 +27,21 @@ meta-data 当中加入了一个 tools:node= remove
 1.在启动的过程中，可以借助 idleHandler 来做一些延迟加载的事情， 比如在启动过程中 Activity 的 onCreate 里面 addIdleHandler，这样在 Message 空闲的时候，可以执行这个任务  
 2.进行启动时间统计：比如在页面完全加载之后，调用 activity.reportFullyDrawn 来告知系统这个 Activity 已经完全加载，用户可以使用了，比如下面的例子，在主页的 List 加载完成后，调用 activity.reportFullyDrawn  
 # 内存优化
+## Foundation
+### meminfo
+当出现内存偏高或其他内存相关的问题时，我们可以通过 meminfo 来缩小范围、查找潜在的风险点  
+获取方式：adb shell dumpsys meminfo <pkg>  
+meminfo统计：  
+[图片]    
+对照 meminfo 来看：  
+[图片]  
+纵轴：  
+![image](https://github.com/user-attachments/assets/52028878-2de4-4f24-8b63-7c674513f70e)  
+横轴：  
+![image](https://github.com/user-attachments/assets/95f30ffb-ce1a-4321-a7f1-851bd3f5fc59)  
+App Summary:  
+![image](https://github.com/user-attachments/assets/2a57c902-f440-455b-bd04-0697365c48e7)
+## hprof
 ## 内存抖动
 短时间内频繁大量创建临时对象，会频繁 GC，无论哪种方式实现的GC在执行时都不可避免的需要 STW（Stop The World），STW 意味着所有的工作线程都将被暂停，虽然时间很短，但终究会存在时间成本，一两次内存回收不易被察觉，但多次内存回收集中在短时间内爆发，这就会造成较大程度的界面卡顿风险。   
 尽量避免在循环体中创建对象、尽量不要在自定义 View 的 onDraw 方法中创建对象（会被频繁调用）、对于可复用对象，可以考虑使用对象池缓存。  
