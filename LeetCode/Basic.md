@@ -13,7 +13,7 @@ poll 出队
 add 入队
 # StringBuffer
 添加是 append  
-删除是 deleteAt(index)
+删除是 deleteAt(index) 或者是 deleteCharAt（类型是字符的）
 # Random
 Random r = new Random()  
 int num = r.nextInt()
@@ -70,7 +70,8 @@ dfs/bfs、拓扑排序、字典树（前缀树 trie）
 # 快慢指针
 1.head 不是虚节点，fast 需要注意初始化可能是 head.next，while 为 slow != fast，如找链表中点   
 2.判断环时，fast = head，while 为 fast != null
-3.可以由处理环的问题，演变为处理数组的问题，下标和数值进行映射，造一个链表出来，若有重复数则说明有环，找入环点即可，如 s = s.next、s = s.next.next 可以分别演变为 i = nums[i]、j = nums[nums[j]]
+3.可以由处理环的问题，演变为处理数组的问题，下标和数值进行映射，造一个链表出来，若有重复数则说明有环，找入环点即可，如 s = s.next、s = s.next.next 可以分别演变为 i = nums[i]、j = nums[nums[j]]  
+4.需要确定阈值，是 l < r，还是 l != r
 # 位运算
 n & n - 1：表示二进制数去掉最右边的一个 1
 n & 1：表示对 2 取余
