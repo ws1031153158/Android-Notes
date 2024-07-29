@@ -1,5 +1,37 @@
-# flavor
-flavorDimensions 定义 flavor 的 dimension，productFlavors 配置不同的 flavor 并指定 dimension 和 applicationid，在 BuildConfig 中来判断当前 flavor
+# 多渠道
+## Variant
+变体，指应用可以构建不同的版本，还可以针对不同的目标 API 或设备类型，由多个构建类型组合而成，如 debug 与 release，以及构建脚本中定义的产品变种
+## Flavor
+1.productFlavors 产品变种，定义不同变体，每个变体可以有不同的配置和资源  
+2.通过 create 或直接声明渠道名称来创建渠道，并在渠道中按需配置属性参数，如 applicationId（所有渠道保持一致可以保证一个设备只有一个应用安装）、dimension（根据维度划分，同一个维度属于一类集合） 等  
+3.在 BuildConfig 中可以判断当前 flavor  
+## buildType
+构建类型，用来定义构建类型配置，比如是否开启代码混淆、是否开启调试模式等，通常包含 debug 和 release 两种
+## Source
+1.app/src/main/ 为主目录，相当于默认渠道，可以新增其他渠道目录与 main 区分  
+2.渠道构建时，渠道变体会跟主变体目录下的资源进行合并  
+3.如有同名配置资源，例如 strings.xml 文件中的 app_name，则优先取渠道配置资源进行覆盖，其他不同名的则进行合并  
+4.layout 文件、assets 文件则是替换，渠道资源优先于主变体资源
+## Code
+1.代码文件是不支持合并的，也不支持同名  
+2.main 作为主变体，渠道可以引用 main 中的代码类，main 也可以引用渠道中的代码类，但是当渠道变换时，main 则会出现找不到之前渠道代码类的异常，因为渠道中的代码为该渠道专属，只有在该渠道编译时才会与主变体 main 中的代码进行融合
+## SourceSets
+1.可以为渠道指定代码路径，以及 res、manifest 等资源文件路径  
+2.不同渠道可以相互配置其资源  
+3.代码文件、资源代码文件都支持
+## Implementation
+2.默认依赖：implementation  
+3.渠道依赖：变体 + Implementation，如 huaweiImplementation  
+4.构建类型：类型 + Implementation，如 debugImplementation  
+5.组合变体：变体 + 类型 + Implementation，如 huaweiDebugImplementation
+## 打点
+1.meta-data 标签通常在 AndroidManifest.xml 文件中使用，通过键值对的方式为组件提供附加配置信息，在 AndroidManifest.xml 中使用标签通过占位符的方式，来存储渠道信息  
+2.productFlavors 中通过 manifestPlaceholders 来替换 AndroidManifest.xml 文件中 value 的值    
+3.代码中通过  context.getPackageManager().getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA) 来获取 ActivityInfo 中的 metadata
+## BuildConfig
+BuildConfig 通常用来存储一些常量信息，比如版本号，或者在 buildTypes 中根据构建环境来定义接口请求的域名地址等，BuildConfig 会在编译时生成 class 文件，实际上在配置多渠道信息的时候，已经默认会在BuildConfig 中注入渠道信息(FLAVOR)了
+## Tips
+把渠道相关配置抽成一个 channel.gradle 文件，然后在 app/build.gradle 文件中 apply 依赖进来，这样可以更好的管理和维护渠道项目的渠道配置
 # proguard
 增大反编译难度，同时减少包体大小（实际字符串替换为混淆后的字符串，可设置 minifyEnabledproguardFiles），此外，可能被外部调用的子类不需要混淆、本地 native 方法、android-support 包、序列化的类等
 # resource
