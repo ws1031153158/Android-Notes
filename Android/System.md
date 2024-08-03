@@ -73,8 +73,9 @@ onTransitionConsumed：当 transition 停止或 merge 完成时执行一些清�
 是动画 change 的集合，包含 window 的 open/close、bounds/mode 的改变、display 的 rotate/size/density 改变，BSE 的回调会调到此处的 onTransitionReady，这里会从内核回调到 Shell 侧 TransitionPlayerImpl 的 onTransitionReady。  
 会在各个回调（如 onTransitionReady）中传递 transitionInfo，info 包含了 trigger type 以及一个 changes list
 lifecycle：  
+启动/请求 transition 时 添加到 pending -> core 通知时转至 ready -> 开始动画时为 active  
 1.Trigger：启动 task  
-2.Collecting：记录所有的 change，等待 C 端 接收 chane 并将匹配的每一帧数据和suface 的 change 绘制到同步的 transaction(为 invisible)  
+2.Collecting：记录所有的 change，等待 C 端 接收 change 并将匹配的每一帧数据和 suface 的 change 绘制到同步的 transaction(为 invisible)，一次只有一个 transition 能成为 collectingTransition，实际上可以分为两阶段，阶段一是实际参与 suface 的 change，  收集 transition 封装为 collectingTransition，阶段二就是等待 transition ready，这一阶段不会改变 surface，所以可以同时进行多个  
 3.Playing:做动画到新的 state  
 4.Finished：内核做一些善后处理如  clean 操作以及将使用完毕的 leash 置为 invalide    
 Collect：  
@@ -84,13 +85,28 @@ Collect：
 4.Playing：SurfaceAnimationRunner#startAnimationshell 接收 onTransactionReady 回调过来的 message 随后做动画，动画结束后执行 finishTransition 告知内核  
 Finising：  
 1.一些 FinishCallback  
-2.内核在 finishTransition 中做一些 clean 工作
+2.内核在 finishTransition 中做一些 clean 工作  
+整体流程：  
+![image](https://github.com/user-attachments/assets/9eea6395-2c38-4c64-90cb-f5483f95cfe2)  
+创建并收集 transition：  
+![image](https://github.com/user-attachments/assets/9eed3e1b-2e65-402a-9384-ba794ef31071)   
+![image](https://github.com/user-attachments/assets/91b622b0-dea1-42e0-bae0-beb916a9aedd)  
+![image](https://github.com/user-attachments/assets/a9fe3834-0cad-431a-8d64-ba8583a9193f)
+### Track & SYNC
+1.shell transition 一次只能 play 一个动画，因此引入 track，支持多个 track play，core 为 track 分配 ID，shell 可以使用 ID 并行 play，或机型 merge，相同 track ID 的 transition 都会在同一 track 中顺序 play，但 track 之间是独立的  
+2.但一些极端情况，transition 可能参与多个 track ，因此又引入 SYNC，在开始前结束所有正在运行的 transition/track
 ### OverView
 1.Shell 侧 TransitionPlayerImpl 实现 ITransitionPlayer 接口，初始化通过 registerTransitionPlayer 注册至 Core 侧 TransitionController 保存。  
 2.Transition 开始时 Core 侧通过 ITransitionPlayer.requestStartTransition 通知 Shell 侧（IRemoteTransition 实例也通过此接口参数传递），Shell 侧此方法通知各个 handler.handleRequest。    
 3.Shell 侧通过 startTransition 通知 Core 侧开始 Transition。  
 4.Core 侧 WM operations(Trigger 加上来自 startTransition 的 WCT) 完成后，BLASTSyncEngine 等待参与的窗口重绘（每次 applySurfaceChangedTransaction 后触发 onSurfacePlacement 检查），全部重绘完毕，BSE 收集所有 SyncTransaction 到 merged transaction，调用 onTransactionReady （完成动画准备工作：更新可见性、创建 transactionInfo 、startTransaction、finishTransaction等）通知 listener，Shell 侧 onTransactionReady 将 transaction 派发至对应 handler 执行动画，remoteTransition 场景动画是远端通过 IRemoteTransition 完成的。  
 5.动画完成后 Shell 侧通过 finishTransition 通知 core 同时 core 调用同名接口完成收尾（清理）
+### Tips
+Shell 也有可能导致内存泄露，基本上都是某个动画未正常结束，执行时间太久导致后续动画堆积或被 merge 到异常动画，相关 surface 无法释放造成的  
+## Transition 耗时过长导致后续动画堆积
+看 visible layer 中 transition root（每个动画都会创建一个） 相关 layer，shell 端新的 transition 一直在等待执行，而某个动画执行太久，导致后续动画一直未执行，transition root 一直未释放
+## Transition 未正常 finish 导致后续动画被 merge
+transition 未 finish，会导致后续动画都被 merge 到这个 transition 上来，这些动画一直不能结束，导致内存泄露
 ## ​BlastBufferQueue
 Buffer 申请在 APP 侧，dequeue，queue，acquire，release 操作均由 APP 进行，通过 Transaction 传递给 SF，减少 SF 压力。  
 界面不显示会释放 BlastBufferQueue 对象，减少内存。  
