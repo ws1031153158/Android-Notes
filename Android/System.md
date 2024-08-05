@@ -314,3 +314,30 @@ IPC 中通过 contentResolver 获取另一进程的 contentProvider 提供的数
 3.onTerminal：结束时回调  
 4.onLowMemory：内存不足时回调  
 5.onTrimMemory：内存清理时回调
+# Configuration
+## 整体时序
+![image](https://github.com/user-attachments/assets/0c96fdf4-21e3-4c10-a479-c7bda90f602c)  
+![image](https://github.com/user-attachments/assets/681327bd-06ef-4b21-88c9-487172cea83d)
+## 进程
+主要是更新 APP 进程中 Resource 的 Config 并触发 Application、Service、ContentProvider 的 onConfigurationChanged  
+![image](https://github.com/user-attachments/assets/46c5c767-d673-45a5-9eaa-68e17a30b9b6)  
+## Activity
+### relaunch
+manifest 文件没有配置了 configChanges，则回 relaunch  
+![image](https://github.com/user-attachments/assets/79fa5c99-02eb-4457-b37a-fefa57aaa3c3)    
+一般 top activity 会 resume，底层的走 onPause
+### onConfigurationChanged
+配置 configChanges，则会走 onConfigurationChanged 回调  
+![image](https://github.com/user-attachments/assets/6310dcba-3236-446e-bf77-b973a2d59540)
+### top activity
+![image](https://github.com/user-attachments/assets/4d2e94ca-e0aa-4c1b-9b52-95882727c024)
+### 其他可见 activity
+![image](https://github.com/user-attachments/assets/cdb17ff7-9fb6-4d79-9b3c-af55d286d6b0)
+### 不可见 activity
+![image](https://github.com/user-attachments/assets/1f86c82a-53c9-4109-a539-2e83a1595c34)  
+会在下次 resume 的时候去执行 relaunch，因此跟上面两种不在同一线程，不在同一时间，若需要看 relaunch 原因，需要往前查找 configuration changed 相关 log
+
+
+
+
+
