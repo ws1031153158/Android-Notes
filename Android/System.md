@@ -289,13 +289,35 @@ onDestroy
 3.AT 执行 handle 操作，绑定 mBase 以及 instrumentation，接着创建 application，执行 attachBaseContext  
 4.最终执行 CP 的 onCreate  
 ## ContentResolver
-IPC 中通过 contentResolver 获取另一进程的 contentProvider 提供的数据（C 端调用 call 方法，S 端需要重新此方法）
+IPC 中通过 contentResolver 获取另一进程的 contentProvider 提供的数据（C 端调用 call 方法，S 端需要重写此方法）
 ## foundation
 1.采用索引表的形式组织数据，会指定唯一提供者以及访问权限  
 2.底层是通过 binder 实现的，方法都运行在 binder 线程（如 call 方法）  
-3.数据更新类似广播机制，通用一个 contentObserver（也需要注册，通过 URI 描述，告知接收数据类型） 接收数据更新通知，由 provider 来发送通知，数据源由 SQLite 实现，数据也会被封装为 cursor  
+3.数据更新类似广播机制，通过一个 contentObserver（也需要注册，通过 URI 描述，告知接收数据类型） 接收数据更新通知，由 provider 来发送通知，数据源由 SQLite 实现，数据也会被封装为 cursor  
 4.多线程操作，若针对内存则需要加锁实现同步，若底层为数据库数据则不需要，SQLite 会自己处理，但若是多个 SQLite 则还是需要自己处理同步    
 5.多进程操作会由请求队列按顺序执行  
+## C 端查询
+1.若有 ANR，卡在 acquireProvider 则是与 system server 通信；卡在访问 IContentProvider 接口则是跟 S 端通信  
+2.query 方式失败，会建立 stable 连接  
+3.call、insert、delete、update 都是建立 stable 连接，对端挂掉，也会级联查杀 client  
+4.query 建立 unstable 连接，client 不绑定对端的查杀状态  
+5.ActivityThread.acquireProvider 执行时，若本地有对于 IContentProvider 实例，则直接获取；不存在，则需要向 AMS 查询，若对端 provider 已发布，直接执行本地 install，未发布则会先 wait，等待 20 s，超时会 ANR，此外，正常流程为一端先 install，完成后 binder 到 AMS，来 publish provider，这里在 S 端发布完成后，AMS 会 notify C 端，解除 wait 状态  
+## AMS 查询
+运行在 system server 进程  
+1.S 进程存在，且已发布 provider，则直接建立连接  
+2.S 进程存在，未发布，则通知 S 端发布  
+3.S 进程不存在，则先创建进程
+## 返回 null
+1.对端进程死亡或不存在  
+2.provider 不在运行状态  
+3.pms 解析 provider 所在 application 失败 
+## 引用计数
+1.对于 app 而言，C 端获取到 S 端 provider 后建立连接，引用计数增加，在 call 结束后，release provider，引用计数减少  
+2.对 system server 而言，ActivityThread.complete remove provider 后，到 AMS 去 removeContentProvider，最终 adjustCounts
+## 死亡移除
+目标 CP 进程结束后，AMS 会根据连接的引用计数，决定是否杀死 C 端进程  
+1.stableCount 不为 0，则会杀死进程  
+2.stableCount 为 0，unStableCount 不为 0，则通知 C 端，并移除对应连接
 # Application
 应用初始化启动时由系统创建，存储一些系统信息
 ## Init
