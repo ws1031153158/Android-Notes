@@ -320,7 +320,10 @@ IPC 中通过 contentResolver 获取另一进程的 contentProvider 提供的数
 ![image](https://github.com/user-attachments/assets/681327bd-06ef-4b21-88c9-487172cea83d)
 ## 进程
 主要是更新 APP 进程中 Resource 的 Config 并触发 Application、Service、ContentProvider 的 onConfigurationChanged  
+## System server
 ![image](https://github.com/user-attachments/assets/46c5c767-d673-45a5-9eaa-68e17a30b9b6)  
+## App
+![image](https://github.com/user-attachments/assets/52fcea5b-11e9-4c1e-8d9b-90050398285c)
 ## Activity
 ### relaunch
 manifest 文件没有配置了 configChanges，则回 relaunch  
