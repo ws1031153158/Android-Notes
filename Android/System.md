@@ -281,10 +281,8 @@ singleInstance：单一实例，每个 activity 都位于独立的栈中
 ## Tips
 所有绑定的 C 端都解除了绑定，这个 service 才会被销毁
 ## Lifecycle
-onStartCommand  
-onBind（onReBind）  
-onUnbind   
-onDestroy
+onCreate -> onStartCommand -> onDestroy  
+onCreate ->   onBind -> onUnbind -> onDestroy
 # Broadcast
 ## foundation
 分为普通和有序广播，有序指的是上一个拦截广播在释放之后下一个才可以获取，会按照指定的优先级接收本地（当前应用或当前进程）和全局的广播
