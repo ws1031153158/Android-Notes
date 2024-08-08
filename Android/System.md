@@ -36,7 +36,25 @@ Configuration 是用来保存系统的各项配置的类，如网络运营商配
 - mBounds 保存该配置下窗口相对于整个屏幕的可用区域  
 - mAppBounds 可以用来保存 mBounds 中去除了一些系统装饰后应用可以使用的区域  
 - mMaxBounds （Android 12L）应用可以获取到的最大区域，一般是全屏幕  
-mWindowingMode 保存的是该配置下窗口的显示模式，例如全屏、分屏、浮动等模式。    
+mWindowingMode 保存的是该配置下窗口的显示模式，例如全屏、分屏、浮动等模式。
+## Window 显示
+### 添加窗口
+1.app 端 activity resume 后，viewRootImpl 会通知 system server 添加窗口   
+2.新添加窗口默认为 NO_SURFACE，还没有绘制   
+![image](https://github.com/user-attachments/assets/170b474e-b070-4427-b94b-33fea2a23bb0)  
+### 创建 Surface
+1.App 调用 system server 端 relayoutWindow 开始创建 surface，等待绘制  
+2.system server 会创建一个空白 surface，绘制完成前是隐藏的  
+3.app 端在 Vsync 信号到来时执行 doFrame，以及下一次的 sheduleVsync（post 同步屏障到消息队列，阻塞同步消息执行；post traversalsRunnable 到 Choreographer 的 mCallbackQueue 中，等待下次 Vsync 信号到来执行回调）     
+4.surface 为 DRAW_PENDING  
+![image](https://github.com/user-attachments/assets/34b7f075-edff-43c5-9005-2150d110fa26)  
+### 绘制 Surface
+1.绘制完成，surface 状态为 COMMIT_DRAW_PENDING，等待系统提交  
+![image](https://github.com/user-attachments/assets/8a9c01ef-a618-479d-90ab-bb545d28faa7)
+### 提交窗口
+1.此时为 READY_TO_SHOW，等待同一 windowToken 绘制完成一起 show  
+![image](https://github.com/user-attachments/assets/0d36216b-9492-4f6d-bbc1-416895ad4e28)
+
 ## WindowContainer
 ConfigurationContainer 是 WMS 里设计的配置容器类，一个配置容器可以容纳其他的配置容器（就像 View 那样），它是抽象类，只定义的容纳关系，并没有实现子容器的保存形式，它也是一个泛型类，只能保存对应泛型的子容器。    
 WindowContainer 是 WMS 里设计的窗口容器类，它可以容纳其他的窗口容器，同时它继承自配置容器类 ConfigurationContainer，因此每一个窗口容器可以向它管理的窗口附加一份新的配置(主要为 WindowConfiguration相关的配置)，窗口容器将它的子容器保存在一个列表里，用于管理窗口配置，包括窗口的生命周期（创建、销毁）、布局和渲染（调整窗口大小，位置和可见性）等，并实现了添加、删除子容器，以及遍历不同类型子容器的便捷方法，内部持有一个 surface 对象。    
