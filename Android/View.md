@@ -16,7 +16,7 @@ getMeasureWidth 返回 MeasureSpec 的大小，因此它在 setMeasureDemention 
 在 setContentView 之后 onMeasure 之前调用，代表 view 中的子 view、控件等映射完成（从 xml 解析完毕），可以进行初始化了（如 findView 等获取控件和子 view）  
 setContentView 阶段 decorView 和容纳 layout 的 content 初始化完毕，将 layout 添加到 content（一个 FrameLayout） 中（window.setContentView）
 ## invalidate & requestLayout
-invalidate：由于 mLayoutRequested 为 false，不会导致 onMeasure 和 onLayout 被调用，会递归调用父 view 的 invalidateChildInParent（不会调用 root 的 invalidate），通过 dispatchDraw 分发事件，再调用 view 的 draw 方法，最终调用 onDraw  
+invalidate：由于 mLayoutRequested 为 false，不会导致 onMeasure 和 onLayout 被调用，会递归调用父 view 的 invalidateChildInParent（不会调用 root 的 invalidate），通过 dispatchDraw 分发事件，再调用 view 的 draw 方法，最终调用 onDraw（ps：调用 invalidate 后，实际上不影响当前帧，是在下一帧绘制）  
 requestLayout：递归调用父 window 的 requestLayout，不同的是会走 measure 流程，但不一定触发 onDraw（layout 过程 l、t、r、b 变化触发 invalidate，才会走到 onDraw）  
 只需要刷新 view 则使用 inva，需要重新 measure 则使用 requestLayout，可以接一个 invalidate 保证重绘
 ## Measure
