@@ -285,7 +285,8 @@ onCreate -> onStartCommand -> onDestroy
 onCreate ->   onBind -> onUnbind -> onDestroy
 # Broadcast
 ## foundation
-分为普通和有序广播，有序指的是上一个拦截广播在释放之后下一个才可以获取，会按照指定的优先级接收本地（当前应用或当前进程）和全局的广播
+分为普通和有序广播，有序指的是上一个拦截广播在释放之后下一个才可以获取，会按照指定的优先级接收本地（当前应用或当前进程）和全局的广播  ，但是是串行分发，效率低，可以通过 abort 截断，入队会根据优先级对 receiver 排序，普通就是无序的，也是默认的，是并行分发，不可拦截、中止或修改，数据传递通过 intent.putExtra  
+按照处理类型可以分为前台广播（发生时添加 tag 为 intent.FLAG_RECEIVER_FOREGROUND，10s 超时）和后台广播（默认就是后台，60s 超时），各自有一个广播队列互不干扰  
 ## Send
 1.还是从一个 CW 开始 sendBroadcast，接着 mBase 执行 sendBroadcast  
 2.向 AMS 发起请求，由 AMS 执行 broadcastIntent，找到广播接收者（满足 intentFilter），并将此接收者放入到广播列表等待被唤起（对此接收者调用 send）
