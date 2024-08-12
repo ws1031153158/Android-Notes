@@ -263,6 +263,16 @@ singleInstance：单一实例，每个 activity 都位于独立的栈中
 设置 singleTask，同时指定 Activity 所需要的栈名称，使相应的 Activity 存在于不同的栈中。   
 当 allowTaskReparenting 为 true 时，表示 Activity 能从启动的 Task 移动到有 affinity 的 Task。  
 # Service
+## 前台Service
+高进程优先级，避免由于低内存或其他厂商定制策略被系统查杀，会在通知栏显示通知
+### ANR 
+默认 anr 超时时间为 20s，以 startForegroundService 方式启动的 Service，则需要在 10s 内调用 startForeground 方法，否则会发生 ANR。一般会将该方法放到 Service 的 onStartCommand 中去执行，因为这种类型的 ANR 超时时间是从 framework 层开始通知 app 端执行 Service 的 onStartCommand 开始计算的。如果将该方法放到 Service 的 onCreate 中去执行，onStartCommand 方法返回值是 START_NOT_STICKY，进程被杀后 Service 重启不会回调 onCreate 方法，但是还会走 ANR 超时逻辑   
+### 开启流程
+![image](https://github.com/user-attachments/assets/ea147127-a210-467f-9faa-450029092161)
+### 取消流程
+![image](https://github.com/user-attachments/assets/2d30047c-b6a1-49be-895c-725123d4ccfa)
+## 后台Service
+没有通知，优先级较低；anr 超时时间为 200s，android 对后台进程管控比较严格，app 退到后台超过 1min 就会进入 idle 状态，并尝试 stop 相关的 Service   
 ## Launch
 一般通过 startService 来启动一个服务，多次调用只会走一次 onCreate（只创建一次），但 onStartCommmand（onStart 弃用了） 每次都会调用。  
 1.首先从一个 contextWrapper（context 代理，将调用委托给 contextImpl，也就是 mBase）的 startService 开始  
