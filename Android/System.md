@@ -295,16 +295,17 @@ onCreate -> onStartCommand -> onDestroy
 onCreate ->   onBind -> onUnbind -> onDestroy
 # Broadcast
 ## foundation
-分为普通和有序广播，有序指的是上一个拦截广播在释放之后下一个才可以获取，会按照指定的优先级接收本地（当前应用或当前进程）和全局的广播  ，但是是串行分发，效率低，可以通过 abort 截断，入队会根据优先级对 receiver 排序，普通就是无序的，也是默认的，是并行分发，不可拦截、中止或修改，数据传递通过 intent.putExtra  
-按照处理类型可以分为前台广播（发生时添加 tag 为 intent.FLAG_RECEIVER_FOREGROUND，10s 超时）和后台广播（默认就是后台，60s 超时），各自有一个广播队列互不干扰  
-## Send
-1.还是从一个 CW 开始 sendBroadcast，接着 mBase 执行 sendBroadcast  
-2.向 AMS 发起请求，由 AMS 执行 broadcastIntent，找到广播接收者（满足 intentFilter），并将此接收者放入到广播列表等待被唤起（对此接收者调用 send）
+1.分为普通和有序广播，有序指的是上一个拦截广播在释放之后下一个才可以获取，会按照指定的优先级接收本地（当前应用或当前进程）和全局的广播  ，但是是串行分发，效率低，可以通过 abort 截断，入队会根据优先级对 receiver 排序，普通就是无序的，也是默认的，是并行分发，不可拦截、中止或修改，数据传递通过 intent.putExtra    
+2.有序广播和无序广播主要区别在于可以指定广播的最后一个接收者 resultReceiver，通过最后一个 receiver 可以知道广播派发完了，做一些收尾工作   
+3.按照处理类型可以分为前台广播（发生时添加 tag 为 intent.FLAG_RECEIVER_FOREGROUND，10s 超时）和后台广播（默认就是后台，60s 超时），各自有一个广播队列互不干扰  
 ### Registe
 分为 manifest 静态注册（PMS 初始化时自动注册）和代码动态注册（运行时）  
 1.四大组件都差不多，还是 CW 到 mBase 挨个调用  
 2.通过 LoadApk.Dispatcher 实现一个 IntentReceiver（Binder 对象），并向 AMS 发起请求，由 AMS 来真正注册，并存储 intentFilter 和 receiver
 广播需要及时 unRegiste
+## Send
+1.还是从一个 CW 开始 sendBroadcast，接着 mBase 执行 sendBroadcast  
+2.向 AMS 发起请求，由 AMS 执行 broadcastIntent，找到广播接收者（满足 intentFilter），并将此接收者放入到广播列表等待被唤起（对此接收者调用 send）
 ## Receive
 与 send 对应，上述提到的广播列表中轮到该接收者时，会经过 appilcationThread 处理，接着通过 LoadApk.receiverDispatcher 执行 performReceive，通过 H 来 post 消息，最终执行 onReceive
 # ContentProvider
