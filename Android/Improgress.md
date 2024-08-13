@@ -1,21 +1,75 @@
 # 启动优化
-## 视觉
-设置预览图、自定义 Theme 等优化用户等待加载时的观感。  
-## 绑大核
-处理速度不同，绑大核就是让优先级（PR/IN，越低越好）高（容易获取时间片）线程、进程运行在频率高的 CPU上（一般 0-3 小核，4-7 大核）。  
-## GC抑制
-ART 不会时停，但也很消耗资源，原生处理为 2s 后提高 GC 阈值，可以减少次数。  
-## onCreate
+## 启动状态
+1.冷启动：应用自设备启动后或系统终止应用后首次启动，耗时最多，是衡量启动耗时的标准       
+2.温启动：当启动应用时，后台已有该应用的进程，但是 Activity 需要重新创建（退出应用后又重新启动应用。进程可能还在运行/系统因内存不足等原因将应用回收，然后用户又重新启动这个应用）   
+3.热启动：Activity 只需要走 onStart，但是如果一些内存为响应内存整理事件（如 onTrimMemory()）而被完全清除，则需要为了响应热启动而重新创建相应的对象，热启动显示的屏幕上行为和冷启动场景相同。系统进程显示空白屏幕，直到应用完成 Activity 呈现  
+## 启动阶段
+![image](https://github.com/user-attachments/assets/5ec9b45f-770c-4560-be5b-c8be4af1e3a5)  
+### Application
+在 Application 阶段，可以在 attachBaseContext，installProvider 和 app:onCreate 三个时间段进行相关优化      
+bindApplication：APP 进程由 zygote 进程 fork 出来后会执行 ActivityThread 的 main 方法，该方法最终触发执行 bindApplication()，这也是 Application 阶段的起点   
+attachBaseContext：在应用中最早能触达到的生命周期，本阶段也是最早的预加载时机   
+installProvider：很多三方 sdk 借助该时机来做初始化操作，很可能导致启动耗时的不可控情形，需要按具体 case 优化   
+onCreate：这里有很多三方库和业务的初始化操作，是通过异步、按需、预加载等手段做优化的主要时机，它也是 Application 阶段的末尾   
+### Activity
+创建主 Activity 并且执行相关生命周期方法      
+Activity 阶段最关键的生命周期是 onCreate()，这个阶段中包含了大量的 UI 构建、首页相关业务、对象初始化等耗时任务，是我们在优化启动过程中非常重要的一环，我们可以通过异步、预加载、延迟执行等手段做各方面的优化   
+### 绘制
+来到 View 构建的阶段，该阶段也是比较耗时，可采用异步 Inflate 配合 X2C（编译期将 xml 布局转代码）并提升相应异步线程优先级的方法综合优化   
+View 的整体渲染阶段，涵盖 measure、layout、draw 三部分，这里可尝试从层级、布局、渲染上取得优化收益   
+最后是首屏数据加载阶段，这部分涵盖非常多数据相关的操作，也需要综合性优化，可尝试预加载、三级缓存或网络优先级调度等手段进行优化   
+### 首帧
+我们在应用中能触达到的 attachBaseContext 阶段，这是最早的预加载时机   
+可以把这个方法的回调时间当作启动开始时间，因为 attachBaseContext() 是应用进程的第一个生命周期，但是准确来说，应用的启动时间包括进程创建，应该在冷启动时用户点击应用 Icon 开始计算   
+Activity#onWindowFocusChanged() 这个方法的调用时机是用户与 Activity 交互的最佳时间点，当 Activity 中的 View 测量绘制完成之后会回调 Activity 的 onWindowFocusChanged() 方法，可以选择它来当作时间结束的时间点   
+但是大部分数据是通过请求接口回来之后，才能填充页面才能显示出来，当执行到 onWindowFocusChanged() 的时候，请求数据还没完成，页面上依旧是没有数据的，用户仅仅可以交互写死在 XML 布局当中的视图，更多的内容还是不可见，不可交互的   
+所以结束时间点通常选择在列表上面第一个 itemView 的 perDrawCallback() 方法的回调时机当作时间结束点，也就是首帧时间。当列表上面第一个 itemView 被显示出来的时候说明网络请求已经完成。页面上的 View 已经填充了数据，并且开始重新渲染了。此时用户是可以交互的，这个才是比较有意义的时间节点，可以通过监听 itemView.viewTreeObserver.addOnPreDrawListener(object :    
+ ViewTreeObserver.OnPreDrawListener {  
+    override fun onPreDraw(): Boolean {  
+        return false  
+    }  
+})  
+## 耗时分析
+速度测量 && 启动耗时：adb shell dumpsys AMS 耗时信息（AMS）、attachBaseContext 记录启动时间，在 View 绘制完记录结束时间（埋点）（onWindowFocusChanged 是首帧绘制，还未完成）、Debug SDK、Trace SDK
+## Application 优化
+### 视觉
+原生逻辑是冷启动过程中会创建一个空白的 Window，等到应用创建第一个 Activity 后才将该 Window 替换    
+如果 Application 或 Activity 启动的过程太慢，导致系统的 BackgroundWindow 没有及时被替换，就会出现启动时白屏或黑屏的情况      
+可以设置预览图、自定义 Theme 等优化用户等待加载时的观感
 ### 异步 init
-将 init 分为多个子 task 放在子 thread（提交到线程池），task 之间无依赖关系。此外，若 init 在 Application.onCreate 结束前完成，可用 CountDownLatch 等待 task 执行，或者根据依赖关系排序生成有向无环图，最后由优先级执行 task。任务可以分为（init 前、后，空闲，子、主线程等 task）。
+![image](https://github.com/user-attachments/assets/00093f59-fd7c-44fb-9fdc-fc4f116f56c2)   
+将 init 分为多个子 task 放在子 thread（提交到线程池），task 之间无依赖关系     
+此外，若 init 在 Application.onCreate 结束前完成，可用 CountDownLatch 等待 task 执行  
+![image](https://github.com/user-attachments/assets/1d9c5cb5-9197-4da4-9843-7efb5e08b8f2)    
+根据依赖关系排序生成有向无环图，最后由优先级执行 task。任务可以分为（init 前、后，空闲，子、主线程等 task）       
+![image](https://github.com/user-attachments/assets/850fa3c3-02b0-456f-90d4-96fd73ba98c6)  
 ### 延迟 init
 优先级不高，可在启动完成后执行的 init task延迟到启动完成后执行（如 handler.postdelay），但延迟后的页面加载完成可能造成手势失效（如滑动）。  
 此外，init launcher 利用 IdleHandler 实现主线程空闲时执行任务，不影响用户操作。    
-## 状态
-冷启动：先创建进程，再启动应用，最后绘制UI。  
-暖启动：只重走 Activity 的生命周期。  
-热启动：通过 onStop 或 onPause 后直接 onResume。  
-速度测量 && 启动耗时：adb shell dumpsys AMS 耗时信息（AMS）、attachBaseContext 记录启动时间，在 View 绘制完记录结束时间（埋点）（onWindowFocusChanged 是首帧绘制，还未完成）、Debug SDK、Trace SDK
+![image](https://github.com/user-attachments/assets/4b555acb-2c7d-4545-8327-8a93b4b853a6)
+### 系统调度
+启动过程中减少系统调用，避免与 AMS、WMS 竞争锁，启动过程中本身 AMS 和 WMS 的工作就很多，且 AMS 和 WMS 很多操作都是带锁的，如果此时 App 再有过多的 Binder 调用与 AMS、WMS 通信，SystemServer 就会出现大量的锁等待，阻塞关键操作  
+启动过程中除了 Activity 之外的组件启动要谨慎，因为四大组件的启动都是在主线程的，如果组件启动慢，占用了 Message 通道，也会影响应用的启动速度，系统分配的核心数有限并且分配的频率并不是最高的
+## Activity 优化
+### 类预加载
+一个类的加载耗时不多，但是在几百上千的基数上，也会延迟启动时间，将进入首页的 class 对象，使用线程池提前预加载进来，在类下次使用时则可以直接使用而不需要触发类加载   
+Class.forName() 只加载类本身以及静态变量的引用类，new 类实例可以额外加载类成员变量的引用类  
+确定哪些类需要提前加载，可以切换系统的 ClassLoader，在自定义 ClassLoader 里面每个类 load 时加一个 log，在项目中运行一次，这样就可以拿到所有 log，也就是需要异步加载的类  
+### SP
+sharedPreferences 是一个 xml 的读取和存储操作，在使用前都会调用 getSharedPreferences 方法，这时它会去异步加载文件当中的配置文件，load 到内存当中，调用 get 或 put 属性时，如果 load 内存的操作没有执行完成，那么就会一直阻塞进行等待，都是拿同一把锁，它既然是 IO 操作，如果这文件存在很久，这个时间就会很长,如果项目比较大，有几十个类使用 SharedPreferences 文件，里面的文件也非常多   
+1.在 Application 中 MultiDex 之前加载 SharedPreferences（如果其他类在 Multidex 之前加载进行操作，会因为一些类不在主 dex 当中，导致崩溃，Sharedpreferences 是系统类，不会报错）   
+2.创建 SharedPreferences 并且保存到 Map 中，那么需要的时候可以在 SP_MAP 中直接获取
+### 页面合并
+![image](https://github.com/user-attachments/assets/09208ec8-740e-4656-9fc0-a2d092fe5943)    
+利用读取开屏信息和等待广告的时间，做一些与 Activity 强关联的并发任务，比如异步 View 预加载，数据加载等  
+![image](https://github.com/user-attachments/assets/2e245352-19fd-4d3f-a980-2107d941acb7)  
+MainAcitvity 的 launch mode 需要设置为 singleTop，否则会出现 App 从后台进前台，非 MainActivity 走生命周期的现象  
+跳转到 MainAcitvity 之后，其他二级页面需要全部都关闭掉，站内跳转到 MainActivity 则附带 CLEAR_TOP | NEW_TASK 的标记  
+## 其他优化
+### 绑大核
+处理速度不同，绑大核就是让优先级（PR/IN，越低越好）高（容易获取时间片）线程、进程运行在频率高的 CPU上（一般 0-3 小核，4-7 大核）。  
+### GC抑制
+ART 不会时停，但也很消耗资源，原生处理为 2s 后提高 GC 阈值，可以减少次数。  
 ## AppStarter
 不同的库使用不同的 ContentProvider 进行初始化，导致 ContentProvider 太多，管理杂乱，影响耗时  
 可以移除三方库的 ContentProvider 启动时候自动初始化的步骤，手动通过 LazyLoad 的方式启动，此外，应用开发者可以控制各个库的初始化时机或者初始化顺序  
@@ -25,7 +79,7 @@ meta-data 当中加入了一个 tools:node= remove
 可以在 MessageQueue 空闲的时候执行任务  
 ![image](https://github.com/user-attachments/assets/9f4a2fbb-11f5-4495-bd93-c6eee56e9e0d)  
 1.在启动的过程中，可以借助 idleHandler 来做一些延迟加载的事情， 比如在启动过程中 Activity 的 onCreate 里面 addIdleHandler，这样在 Message 空闲的时候，可以执行这个任务  
-2.进行启动时间统计：比如在页面完全加载之后，调用 activity.reportFullyDrawn 来告知系统这个 Activity 已经完全加载，用户可以使用了，比如下面的例子，在主页的 List 加载完成后，调用 activity.reportFullyDrawn  
+2.进行启动时间统计：比如在页面完全加载之后，调用 activity.reportFullyDrawn 来告知系统这个 Activity 已经完全加载，用户可以使用了，比如在主页的 List 加载完成后，调用 activity.reportFullyDrawn  
 # 内存优化
 ## Foundation
 ### meminfo
