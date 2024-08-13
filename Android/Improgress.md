@@ -65,11 +65,11 @@ sharedPreferences 是一个 xml 的读取和存储操作，在使用前都会调
 ![image](https://github.com/user-attachments/assets/2e245352-19fd-4d3f-a980-2107d941acb7)  
 MainAcitvity 的 launch mode 需要设置为 singleTop，否则会出现 App 从后台进前台，非 MainActivity 走生命周期的现象  
 跳转到 MainAcitvity 之后，其他二级页面需要全部都关闭掉，站内跳转到 MainActivity 则附带 CLEAR_TOP | NEW_TASK 的标记  
-## 其他优化
+### 数据加载
+启动页、首页的数据预加载：闪屏广告、首页数据 采用内存-磁盘-网络三级缓存策略，下次进入页面时优先直接读取缓存数据，再去网络中加载数据  
+也可以在 Activity 打开之前就预加载数据，在 Activity 的 UI 布局初始化完成后显示预加载的数据，大大缩短启动时间，但需要注意的是过多的线程预加载会让我们的逻辑变得更加复杂
 ### 绑大核
-处理速度不同，绑大核就是让优先级（PR/IN，越低越好）高（容易获取时间片）线程、进程运行在频率高的 CPU上（一般 0-3 小核，4-7 大核）。  
-### GC抑制
-ART 不会时停，但也很消耗资源，原生处理为 2s 后提高 GC 阈值，可以减少次数。  
+处理速度不同，绑大核就是让优先级（PR/IN，越低越好）高（容易获取时间片）线程、进程运行在频率高的 CPU上（一般 0-3 小核，4-7 大核）。   
 ## AppStarter
 不同的库使用不同的 ContentProvider 进行初始化，导致 ContentProvider 太多，管理杂乱，影响耗时  
 可以移除三方库的 ContentProvider 启动时候自动初始化的步骤，手动通过 LazyLoad 的方式启动，此外，应用开发者可以控制各个库的初始化时机或者初始化顺序  
