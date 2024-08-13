@@ -41,6 +41,33 @@ msg.target（每个 msg 对应一个 target，为对应 handler 的引用，也�
 对 MessageQueue 进行轮询，没有新消息会一直堵塞，构造方法中会创建一个 MessageQueue  
 Looper.prepare 加上 Looper.loop（执行轮询，死循环，MessageQueue.next 返回 null 才会跳出循环，没有消息阻塞则会在 nativePollOnce 释放 cpu 资源进入休眠）来为线程创建一个 Looper，子线程手动创建 Looper 需要主动调用 quit 退出循环，退出后线程会立刻终止。
 一般 ANR 是由于规定时间没有完成指定任务，系统会抛出异常，looper 阻塞时不会占用过多 cpu 资源，也不存在指定时间，不会抛出 anr，但对于业务添加的线程，尽量再确定不再使用时回收资源关闭 looper
+## 同步屏障
+向主线程发送了一个UI绘制操作Message，而此时消息队列中的消息非常多，那么这个Message的处理可能会得到延迟，绘制不及时造成界面卡顿。同步屏障机制的作用，是让这个绘制消息得以越过其他的消息，优先被执行  
+![image](https://github.com/user-attachments/assets/507e0233-8679-4376-94cc-0817cc25b620)    
+发送一个特殊消息作为屏障消息，当消息队列检测到后，从这个消息开始，遍历后续的消息，只处理其中被标记为“异步”的消息
+### 消息种类
+同步：异步之外都属于同步，屏障消息也是特殊的同步消息（tartget == null）  
+异步：标记为 asynchronous 的消息，正常来讲，在出现同步屏障之前，同步异步没有本质区别
+### 处理流程
+#### 发送屏障消息
+MessageQueue.postSyncBarrier，将同步屏障按照 when 大小（也就是时间顺序）放入消息队列，同时返回一个 token 用于移除
+#### 发送异步消息
+1.使用异步类型的 Handler 发送的全部 Message 都是异步的，Handler 有一系列带 Boolean 类型的参数的构造器，决定是否是异步，在发送消息的时候就会给 Message 赋值   
+2.给 Message 标志异步，setAsynchronous 设为 true  
+#### 处理消息  
+和正常处理一样，MessageQueue.next 读取消息，此外，还在这里做了同步屏障的相关判断  
+在 next 无限循环中，首先是 nativePollOnce 阻塞，然后是取消息的同步代码块（使用 synchronized ），首先取消息队列的头部消息（mMessages），如果是屏障消息（target == null），则寻找队列中的异步消息进行处理，否则直接处理这条头部消息  
+在找到合适的消息后（if(msg != null)），会将即将处理的消息移除队列并返回，如果没有找到就会将 nextPollTimeoutMillis 置为 -1，让循环进入阻塞状态  
+next 返回消息后，Looper 调用 Handler.dispatchMessage 回调到对应的方法中（handleMessage 或者 Message callback）
+#### 移除屏障消息
+消息队列是不会自动移除，需要通过 MessageQueue.removeSyncBarrier 根据发送屏障消息时返回的 token 来删除消息  
+会先寻找屏障消息，找不到会抛出异常  
+然后是移除屏障消息，并且判断是否需要唤醒消息队列继续取消息，nativeWake 唤醒 next 方法
+### 添加屏障
+在请求监听 Vsync 信号时，阻塞 Handler 消息队列中的同步消息，优先保证接收 Vsync 信号的异步消息，及时生成新的屏幕数据，供屏幕显示  
+requestLayout 之后，并不会马上开始进行绘制任务，而是在 scheduleTraversals 阶段给主线程设置一个同步屏障，并设置 VSYNC 信号监听  
+![image](https://github.com/user-attachments/assets/ba9ae4ca-6670-4199-a98a-bcf717adae0f)  
+Choreographer 会在 Vsync 信号到来时，往主线程的 MessageQueue 中插入一条异步消息，执行我们上一步设置的绘制监听任务，并移除同步屏障
 # RxJava
 异步数据处理库，也是一种扩展的观察者模式。  
 四大要素：Observable/Flowable（额外传入 backPresureStrategy 参数（ERROR(抛 missingBackPressureException异常)/BUFFER(扩大缓存池,default 128)/DROP(丢弃)/LATEST(消费者.request 传入需求数量，超过丢弃，可以接收最后一个事件））)（被观察者），Observer/Subscriber (实现了 observe r接口,多了unsubscribe 取消订阅,支持背压，异步中，被观察者发送事件速度快于观察者处理速度时，告诉上游被观察者降低发送速度)  
