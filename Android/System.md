@@ -178,6 +178,10 @@ Ztgote fork 出PMS 进程，在 PMS 的 main 函数中完成初始化加载。
 6.instrumentation 中来 new 一个 activity，activity 执行 attach，来 bind contextImpl（也就是维护的 mBase 对象）  
 7.初始化 window 之后执行 performLaunch、resumeLaunch，最终 makeVisible  
 ## Init APP Launch activity
+![image](https://github.com/user-attachments/assets/ae1bca38-7b6e-4773-875d-86a1c2e1a080)
+### Init Process
+![image](https://github.com/user-attachments/assets/797ba746-1e92-4e7e-a361-b05865ae39c4)  
+### Init Activity
 AMS 收到应用进程的 attachApplication 注册请求后，先通过 binder 调用 IApplicationThread.bindApplication 接口，触发应用进程在主线程执行 handleBindeApplication 初始化操作，然后继续执行启动应用Activity，应用进程这边在收到系统 binder 调用后，做进一步初始化和创建流程（Create 和 Resume）    
 ### Create
 1.创建 Activity 的 Context  
