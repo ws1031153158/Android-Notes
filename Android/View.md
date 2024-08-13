@@ -129,7 +129,20 @@ dp：density independent pixel，密度无关像素，为适配不同 dpi，定�
 dpi：dots per inch，每英寸像素数，像素密度  
 sw：屏幕宽度 / （dpi / 160）  
 # progress
-include:布局重用  
-merge:减少布局层级，与 include 配合，include 的布局和当前布局 layout 一致，当前可使用 merge  
-viewStub:不可见的没有大小的 View，按需加载，inflate 只调用一次，之后 viewStub 移除，替换为对应 layout（在 inflate 调用或 setVisibility 后执行）  
-自定义 view 一定要重写两个参数的构造函数：setContentView -> createView -> clazz.getConstructor(mConstructorSignature)，通过反射获取根节点 view，并获取构造方法，这里的 mConstructorSignature 为两个参数的数组
+1.include:布局重用  
+2.merge:减少布局层级，与 include 配合，include 的布局和当前布局 layout 一致，当前可使用 merge  
+3.viewStub:不可见的没有大小的 View，按需加载，inflate 只调用一次，之后 viewStub 移除，替换为对应 layout（在 inflate 调用或 setVisibility 后执行）  
+4.自定义 view 一定要重写两个参数的构造函数：setContentView -> createView -> clazz.getConstructor(mConstructorSignature)，通过反射获取根节点 view，并获取构造方法，这里的 mConstructorSignature 为两个参数的数组  
+5.AsyncLayoutInflater 异步加载布局，在 App 的启动阶段异步加载 View，子线程提前将这些 view 加载到内存，measure 阶段再直接从内存中进行读取。  
+LayoutInflate 进行 xml 加载包括三个步骤：  
+将 xml 文件解析到内存中 XmlResourceParser 的 IO 过程  
+根据 XmlResourceParser 的 Tag name 获取 Class 的 Java 反射过程  
+创建 View 实例，最终生成 View 树  
+异步 inflate 需要注意：  
+锁的问题：LayoutInflate 中存在着对象锁，并且即使通过构建不同的 LayoutInflate 对象绕过这个对象锁，在 AssetManager 层、Native 层仍然会有其他锁，甚至导致了更多的耗时  
+LayoutParams 的问题： 如果传入的 root 为 null，那么 View 的 LayoutParams 将会为 null，在这个 View 被添加到父布局时会采用默认值，这会导致被 Inflate view 的属性丢失  
+inflate 线程优先级的问题：使用线程池时需要提高线程优先级，在进行异步 inflate 时可能会因为 inflate 线程优先级过低导致来不及预加载甚至比不进行预加载更耗时的情况  
+对 Handler 问题：一些自定义 View 在创建的时候会去创建 handler，需要为其指定主线程的 Looper  
+动画问题：自定义 View 里使用了动画，动画在 start 时会校验是否是 UI 线程主线程，这种情况我们需要去修改业务代码，将相关逻辑移动到后续真正添加到 View tree 时  
+需要使用 Activity context 的场景：一是在 Activity 启动之后再进行异步预加载，但是预加载的并发空间可能会被压缩；二是利用全局 context 进行预加载，但是在 add 到 view tree 之前将 context 替换为 Activity 的，以满足 Dialog 显示、LiveData 使用等场景的需求  
+6.懒加载，如 Kotlin by lazy，在真正要使用 binding 时，才会去 inflate
