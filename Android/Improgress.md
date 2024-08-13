@@ -195,6 +195,11 @@ Bitmap 在内存中的存储分两部分 ：一部分是 Bitmap 对象，另一�
 可以通过 LruCache 等缓存机制来管理 Bitmap 对象的复用。除此之外，可以使用 BitmapFactory.Options 的 inBitmap 属性来指定一个可复用的 Bitmap 对象。
 ### 释放 imageview 资源
 bitmap 资源和 background 资源都要回收，对其调用 recycle，并且将维护的局部/全局对象等置为 null。
+## GC 优化
+1.锁屏 GC  
+2.需要资源的特殊场景不 GC  
+3.后台 GC  
+但是，正常来讲 GC 是系统决定的，非必要应用侧不应该主动调用显式 GC，而是去分析内存问题
 ## Tips
 1.SparseArray：只有 integer 类型属性，避免了自动装箱（基本数据类型和包装器类型（引用类型）转换，包装器 .valueof 装箱，xxxValue 拆箱，实现基本类型和引用类直接运算）的开销，可以代替 hashMap。  
 2.使用 static final 优化成员变量，static 会由编译器调用 clinit 方法进行初始化，之后访问的时候会需要先到它那里查找，然后才返回数据。static final 不需做多余的查找动作，打包在 dex 文件中可以直接调用，并不会在类初始化申请内存。基本数据类型的成员，可以全写成 static final。   
