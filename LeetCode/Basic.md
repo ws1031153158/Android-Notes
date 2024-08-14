@@ -17,6 +17,8 @@ add 入队
 # Random
 Random r = new Random()  
 int num = r.nextInt()
+# 矩阵
+设计矩阵方向的，可以定义一个数组，如 int[]{-1, 0, 1} 来约定方向，同时也可以根据限制配合循环方向数组进行来遍历
 # 最大公约数
 （a(x, y) -> y > 0 ? a(y, x % y) : x  
 # 裴蜀定理
