@@ -7,7 +7,7 @@ HashMap 的创建有快捷方式，如 Map.of('key', "value")
 # ArrayList
 new ArrayList<>() 构造时，括号中可以直接传入参数类型匹配的集合，如 map.values  
 类型为数组，且返回为数组时，要注意写法，如 return list.toAray(new int[list.size()][])，add 时也不一样，如 list.add(nums[1], nums)  
-添加时可选择添加至开头：addFirst、末尾：addLast，这里的开头和末尾表示的是排列顺序是从左往右开始，还是从右往左开始添加
+添加时可选择添加至开头：addFirst、末尾：addLast，这里的开头和末尾表示的是第一个的前面，最后一个的后面
 # Queue
 Queue<T> que = new LinkedList<>()  
 poll 出队  
