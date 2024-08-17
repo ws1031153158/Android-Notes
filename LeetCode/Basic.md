@@ -15,6 +15,8 @@ add 入队
 # StringBuffer
 添加是 append  
 删除是 deleteAt(index) 或者是 deleteCharAt（类型是字符的）
+# String
+String.valueOf() 将某个对象变为 String
 # Random
 Random r = new Random()  
 int num = r.nextInt()
