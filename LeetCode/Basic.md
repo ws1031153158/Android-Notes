@@ -20,6 +20,8 @@ String.valueOf() 将某个对象变为 String
 # Random
 Random r = new Random()  
 int num = r.nextInt()
+# 多次循环并更新同一集合
+需要 +n，来保证相对顺序不变
 # 矩阵
 设计矩阵方向的，可以定义一个数组，如 int[]{-1, 0, 1} 来约定方向，同时也可以根据限制配合循环方向数组进行来遍历
 # 滑动窗口
