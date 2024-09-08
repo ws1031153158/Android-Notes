@@ -16,9 +16,10 @@ HashMap 的创建有快捷方式，如 Map.of('key', "value")
 真排序是指数组中的值按大小排序  
 假排序是指排序后只存下标，是读取时的排序（读的时候获取的值是排序后的下标，但实际原数组不变，维护一个新的排序后的下标数组）
 # ArrayList
-new ArrayList<>() 构造时，括号中可以直接传入参数类型匹配的集合，如 map.values  
-类型为数组，且返回为数组时，要注意写法，如 return list.toAray(new int[list.size()][])，add 时也不一样，如 list.add(nums[1], nums)  
-添加时可选择添加至开头：addFirst、末尾：addLast，这里的开头和末尾表示的是第一个的前面，最后一个的后面
+1.new ArrayList<>() 构造时，括号中可以直接传入参数类型匹配的集合，如 map.values  
+2.类型为数组，且返回为数组时，要注意写法，如 return list.toAray(new int[list.size()][])，add 时也不一样，如 list.add(nums[1], nums)  
+3.添加时可选择添加至开头：addFirst、末尾：addLast，这里的开头和末尾表示的是第一个的前面，最后一个的后面  
+4.涉及到交换、删除、添加等改变结构的需求时，同样也可以考虑递归，传入的参数为想要更新的节点的前驱/后驱节点
 # Queue
 Queue<T> que = new LinkedList<>()  
 poll 出队  
