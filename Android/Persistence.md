@@ -9,6 +9,9 @@ sp 只适合轻量级数据的存储，适合少量数据的持久化，存在 I
 3.在 UI 线程调用 commit 方法（写操作是在调用线程中执行）   
 # SQLite
 关系型数据库，数据拆分为相关的数据表。一般通过 contentProvider 进行增删改查，重写 onUpgrade 进行数据库升降级操作。
+## ContentValues
+ContentValues是一个用于存储一组值的类，ContentResolver 可以处理这些值。  
+在数据库操作中，ContentValues 常用于添加数据，其中 Key 是字段名称，Value 是字段的值。类似于一个 Map（构造函数创建一个 map，用于存取数据），但只能存储基本类型的数据，如 string、int 等，不能存储对象。  
 # File
 涉及到 IO，效率低，此外由于权限问题安全性也较差。一般用来存储音频或图片等占用空间较大文件。
 # Cache
