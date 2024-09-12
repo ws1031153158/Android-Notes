@@ -143,7 +143,7 @@ if (index == n) {
 3.不一定非要模板一模一样，比如 n、index 可以自减、自增，不需要额外维护一个变量统计  
 4.有些情况需要判断，选或不选  
 5.有时不一定就按套路，可以直接考虑 dfs，算法不需要返回值，在函数体内直接处理 res，dfs 只是去去除已经遍历过的节点  
-6.需要考虑是在回溯外面遍历还是回溯里面再遍历
+6.需要考虑是在回溯外面遍历还是回溯里面再遍历(一般每个节点回溯时，需要从头开始遍历的，考虑内部遍历)
 ## Tips
 1.temp 为 List，res 也为 List 时，res.add 需要为 add(new ArrayList<>(temp))  
 2.一般 temp 为 int，则 remove 的是 temp.size() - 1，如果为 char，则是 deleteCharAt(index)
