@@ -89,10 +89,23 @@ engine.load 时会先通过 cache 尝试获取，三级缓存分别为内存 -> 
 2.MemoryCache，为 LruCache，采用 LinkedHashMap 保存数据。    
 磁盘：DiskLruCache，磁盘中的图片文件缓存，也有 LinkedHashMap，key 为 String，value 为 Entry（cleanFiles 保存文件），put 的时候 Editor 获取文件，write 写入本地，commit 提交，和 ResourceEncoder（具体写入文件操作）。    
 来源：来源不只是服务器（Remote），在设备上（Local）对应目录不属于 glide 管理范围也算来源。
+# ASM
+通过 Java 字节码操作和分析框架，它可以用于修改现有的 class 文件或动态生成 class 文件
 # WMRouter
 通过注解标注路由信息，编译时扫描，生成加载路由表的类以及 class 文件，app 运行时，路由框架反射调用 class 文件完成路由表的装载  
 ![f036304894f7d9c1e2b3de5d4d4875b0](https://github.com/user-attachments/assets/e3df07da-7a44-4034-868a-1895d6cea2b1)  
-![image](https://github.com/user-attachments/assets/b65b5a52-76a0-4a28-9bb4-787f0ab39a39)
+## 流程
+![image](https://github.com/user-attachments/assets/b65b5a52-76a0-4a28-9bb4-787f0ab39a39)  
+1. 生成 UriRequest  
+2. 进入 RootUriHandler 处理过程  
+3. 处理不同的 Handler
+### 细节
+1. RootUriHandler是使用者调用 init 函数进行初始化，DefaultRootUriHandler 中添加了四个 Handler，对应图上的四种 Handler  
+2. UriHandler 是 base 类，内部的 handle 方法处理分发，进一步调用 handleInternal，它由不同特性的 Handler 进行处理，但基本上都是对自身包含的 Handler 列表进行串行调用，会对他的所有 ChildHandler 进行处理  
+3. PageAnnotationHandler 对应 WMRouter 提供的 RouterPage 注解，如果 host为 page 的 uri，那么他会处理，否则给下一个 Handler；此外，UriAnnotationHandler 对应 RouterUri 注解，RegexAnnotationHandler 对应 RouterRegex 注解，StartUriHandler 对应尝试直接用 setData(Uri) 隐式跳转启动 Uri 的 Handler  
+4. 关于注解的原理都是通过 apt 来进行代码生成，然后再去调用生成的代码，这些生成类都会实现接口，而 ServiceLoader 是根据 SPI 进行扩展的，去获取实现了某个接口的所有实现类
+5. 调用函数时，需要先实例化，或者根据类的信息去一个 provider 池当中找
+6. wmrouter 通过 asm 插件来生成 ServiceLoaderInit，会去扫描 service 包，存储类的信息
 ## APT
 Annotation Processing Tool，编译时注解处理器，在 javac 中的用来编译时扫描和处理的注解的工具，可以为特定的注解，注册注解处理器，可以获取到注解和被注解对象的相关信息，在拿到这些信息后我们可以根据需求来自动的生成一些代码
 ## Router
