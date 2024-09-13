@@ -66,8 +66,13 @@ Annotation：RouteProcessor 对 @Route 类解析，先获取路由元素（metho
 跳转：首先调用 postcard.navigation 进一步调用 _arouter.navigation 这一步加载路由表。此外，withTransition 可以设置转场动画。  
 拦截：onContinue 或 onInterrupt 实现拦截器，至少调一个，是 Activity 就正常走启动流程，是其他三个组件就在终点（destination）用反射创建实例，此外 Fragment 还要设置参数返回实例，contentProvider（实现 IProvider 接口自定义服务）还要通过依赖查找发现服务（依赖注入也可以 @Autowired）
 ## SPI
-Service Provider Interface，该方案是为某个接口动态寻找服务的机制，类似IOC的思想。    
-通过 ServiceLoader.load(Machine.class) 创建 ServiceLoader，去遍历 ServiceLoader 就可以找到所有有实现类。
+Service Provider Interface，该方案是为某个接口动态寻找服务的机制，类似IOC的思想，本质是获取 META-INF/services下的类的完整名称（字符串），然后根据类的完整名称通过类的加载器来实现动态加载的。    
+通过 ServiceLoader.load(Machine.class) 创建 ServiceLoader  
+### 步骤
+1、当服务端提供接口的一具体实现后，在 jar 包的 META-INF/services 目录下创建一个以“接口全限定名”为命名的文件，内容为实现类的全限定名  
+2、接口实现类所在的 jar 包放在主程序的 classpath 中  
+3、主程序通过 java.util.ServiceLoder 动态装载实现模块，它通过扫描 META-INF/services 目录下的配置文件找到实现类的全限定名，把类加载到 JVM  
+4、SPI 的实现类必须携带一个不带参数的构造方法  
 ### ServiceLoader
 1.先获得一个 classloader    
 2.然后去加载 META-INF/services/ 下面的文件，获取相关的配置    
