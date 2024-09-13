@@ -91,7 +91,8 @@ engine.load 时会先通过 cache 尝试获取，三级缓存分别为内存 -> 
 来源：来源不只是服务器（Remote），在设备上（Local）对应目录不属于 glide 管理范围也算来源。
 # WMRouter
 通过注解标注路由信息，编译时扫描，生成加载路由表的类以及 class 文件，app 运行时，路由框架反射调用 class 文件完成路由表的装载  
-![f036304894f7d9c1e2b3de5d4d4875b0](https://github.com/user-attachments/assets/e3df07da-7a44-4034-868a-1895d6cea2b1)
+![f036304894f7d9c1e2b3de5d4d4875b0](https://github.com/user-attachments/assets/e3df07da-7a44-4034-868a-1895d6cea2b1)  
+![image](https://github.com/user-attachments/assets/b65b5a52-76a0-4a28-9bb4-787f0ab39a39)
 ## APT
 Annotation Processing Tool，编译时注解处理器，在 javac 中的用来编译时扫描和处理的注解的工具，可以为特定的注解，注册注解处理器，可以获取到注解和被注解对象的相关信息，在拿到这些信息后我们可以根据需求来自动的生成一些代码
 ## Router
