@@ -91,7 +91,7 @@ engine.load 时会先通过 cache 尝试获取，三级缓存分别为内存 -> 
 来源：来源不只是服务器（Remote），在设备上（Local）对应目录不属于 glide 管理范围也算来源。
 # WMRouter
 通过注解标注路由信息，编译时扫描，生成加载路由表的类以及 class 文件，app 运行时，路由框架反射调用 class 文件完成路由表的装载  
-
+![f036304894f7d9c1e2b3de5d4d4875b0](https://github.com/user-attachments/assets/e3df07da-7a44-4034-868a-1895d6cea2b1)
 ## Router
 由核心模块，负责接收请求并根据配置的路由规则将请求转发给相应的服务端  
 在收到请求后，Router 会根据配置的规则找到对应的服务端，转发请求。在实现上，Router 采用了一种基于 hash 的负载均衡策略，确保请求能够均匀地分发到各个服务实例上。同时，为了提高性能和稳定性，WMRouter 还支持多种负载均衡算法，如随机、轮询等
