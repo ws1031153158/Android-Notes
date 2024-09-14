@@ -54,6 +54,7 @@ Retrofit 使用大量注解来简化请求，Retrofit 将 okHttp 请求抽象成
 @Part 用于表单字段，适用于文件上传的情况，@Part 支持三种类型：RequestBody、MultipartBody.Part、任意类型  
 @PartMap  用于多文件上传， 与 @FieldMap 和 @QueryMap 的使用类似  
 ## 动态代理
+定义的接口方法是各不相同的，需要转化成请求最终发送出去，通过动态代理拦截对原始对象的调用并执行额外的 http 操作，以更简洁的方式发送 HTTP 请求并处理响应  
 Retrofit 在运行期，生成了 ApiService 接口的实现类，调用了 InvocationHandler 的 invoke方法。  
 Retrofit 的 create 方法会实例化定义的 API，并返回一个 call 对象：  
 1.获取 classLoader 对象  
