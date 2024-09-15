@@ -6,7 +6,8 @@
 通过参数传递，不影响传入参数本身的值，是对函数内部的一个新的对象操作，return 出去后，外面的值还是原来的
 # Hash
 Map、Set，不重复的集合作为某种标准，map 类似，值可以重复  
-HashMap 的创建有快捷方式，如 Map.of('key', "value")
+HashMap 的创建有快捷方式，如 Map.of('key', "value")  
+可以通过 Map.Entrey<T, T> 取得 map 中每一对数据，例如 Map.Entry<Integer, Integer> entry = map.entrySet()，之后可以直接通过 entry.getValue()， entry.getKey() 来获取键和值
 # Array
 反转、temp、给定k次，或某个确定值，先看是否需要取余，分治法，对于某一个指定位置或其他阈值，分为左右分别处理  
 类型为数组，且返回为数组时，需要注意写法，如 return list.toArray(new int[list.size()][])  
@@ -111,9 +112,10 @@ dfs/bfs、拓扑排序、字典树（前缀树 trie）
 给每个元素都分配一个数字来标记其优先级，设较小数字具有较高优先级，这样就可以在一个集合中访问优先级最高的元素并对其进行查找和删除操作，保证每次出队都是最大或最小元素（取决于对 Comparator.compare 的重写）。此外，不能插入 null，空间不足会自动扩容。      
 对于堆类型数据结构相关，可以考虑使用优先级队列来辅助
 # 堆
-其实就是完全二叉树（某节点值总是不大于或不小于父节点值）进了一些调整  
-数组、链表等集合，求累加等累计最小、最大值的问题，可以考虑构建小、大顶堆，实现可以用优先级队列 PriorityQueue  
-如果有不连续的两个或多个子集条件，就需要考虑构建多个堆
+1.其实就是完全二叉树（某节点值总是不大于或不小于父节点值）进了一些调整  
+2.数组、链表等集合，求累加等累计最小、最大值的问题，可以考虑构建小、大顶堆，实现可以用优先级队列 PriorityQueue  
+3.如果有不连续的两个或多个子集条件，就需要考虑构建多个堆  
+4.建堆：PriorityQueue<T> h = new PriorityQueue<>((a, b) -> a - b) 构建小顶堆， b - a 为大顶堆，如果为数组，则是 a[0] 和 b[0]
 # 快慢指针
 1.head 不是虚节点，fast 需要注意初始化可能是 head.next，while 为 slow != fast，如找链表中点   
 2.判断环时，fast = head，while 为 fast != null
