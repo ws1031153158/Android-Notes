@@ -31,7 +31,8 @@ add 入队
 添加是 append  
 删除是 deleteAt(index) 或者是 deleteCharAt（类型是字符的）
 # String
-String.valueOf() 将某个对象变为 String
+1. String.valueOf() 将某个对象变为 String
+2. String.trim() 去掉首位空格
 # Random
 Random r = new Random()  
 int num = r.nextInt()
