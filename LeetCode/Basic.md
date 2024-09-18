@@ -5,9 +5,10 @@
 ## 局部
 通过参数传递，不影响传入参数本身的值，是对函数内部的一个新的对象操作，return 出去后，外面的值还是原来的
 # Hash
-Map、Set，不重复的集合作为某种标准，map 类似，值可以重复  
-HashMap 的创建有快捷方式，如 Map.of('key', "value")  
-可以通过 Map.Entrey<T, T> 取得 map 中每一对数据，例如 Map.Entry<Integer, Integer> entry = map.entrySet()，之后可以直接通过 entry.getValue()， entry.getKey() 来获取键和值
+1. Map、Set，不重复的集合作为某种标准，map 类似，值可以重复  
+2. HashMap 的创建有快捷方式，如 Map.of('key', "value")  
+3. 可以通过 Map.Entrey<T, T> 取得 map 中每一对数据，例如 Map.Entry<Integer, Integer> entry = map.entrySet()，之后可以直接通过 entry.getValue()， entry.getKey() 来获取键和值
+4. map.remove(T)  可以直接移除掉一对数据
 # Array
 反转、temp、给定k次，或某个确定值，先看是否需要取余，分治法，对于某一个指定位置或其他阈值，分为左右分别处理  
 类型为数组，且返回为数组时，需要注意写法，如 return list.toArray(new int[list.size()][])  
@@ -20,7 +21,8 @@ HashMap 的创建有快捷方式，如 Map.of('key', "value")
 1.new ArrayList<>() 构造时，括号中可以直接传入参数类型匹配的集合，如 map.values  
 2.类型为数组，且返回为数组时，要注意写法，如 return list.toAray(new int[list.size()][])，add 时也不一样，如 list.add(nums[1], nums)  
 3.添加时可选择添加至开头：addFirst、末尾：addLast，这里的开头和末尾表示的是第一个的前面，最后一个的后面  
-4.涉及到交换、删除、添加等改变结构的需求时，同样也可以考虑递归，传入的参数为想要更新的节点的前驱/后驱节点
+4.涉及到交换、删除、添加等改变结构的需求时，同样也可以考虑递归，传入的参数为想要更新的节点的前驱/后驱节点  
+5.更新节点使用 list.set(arg1, arg2)
 # Queue
 Queue<T> que = new LinkedList<>()  
 poll 出队  
