@@ -33,6 +33,12 @@ add 入队
 # String
 1. String.valueOf() 将某个对象变为 String
 2. String.trim() 去掉首位空格
+# Character
+1. isDigit 判断数字  
+2. isLetter 判断字母  
+3. isLetterOrDigit 判断字母或数字  
+4. toLowerCase 大写变小写  
+5. toUpperCase 小写变大写
 # Random
 Random r = new Random()  
 int num = r.nextInt()
