@@ -1,4 +1,4 @@
-<img width="1400" height="1117" alt="image" src="https://github.com/user-attachments/assets/f225e60e-3f81-4378-a761-f16e2d92b6b9" /># @Composable 函数
+# @Composable 函数
 对应一个XML的Layout。  
 与kotlin中的suspend关键字类似，表明一个函数类型，同样，也只能调用/被调用@Composable标识的函数，也需要一个贯穿所有的上下文调用对象。  
 ## 执行模式
