@@ -120,3 +120,15 @@ $composer.end()?.updateScope { nextComposer ->
 接下来，我们可以在该返回值上使用 lambda 来调用 updateScope 方法，从而告诉运行时在有需要时如何重启当前的 Composable。  
   
 PS：appmodel是指在Jetpack Compose运行时中，用于管理和存储UI状态及相关属性的实例，编译器生成的代码通过它读取UI元素的属性。具体来说，它是Compose中承载UI状态（如count.value）的核心组件，负责在重组过程中维护和传递这些状态信息。
+# Lazycolumn
+类似 RecyclerView，只渲染屏幕上可见的item，滚动时复用，使用一个key帮助 LazyColumn 识别item身份。  
+1.避免不必要的重新渲染    
+2.让动画正确播放  
+3.用唯一稳定的字段作为key  
+4.避免使用index或随机值
+# StateFlow
+设计为单一数据源，如一个 data class 管理所有UI状态。  
+1.用update{}原子更新  
+2.对外暴露只读的 asStateFlow()  
+3.UI只订阅一个流  
+4.状态不会出现矛盾
