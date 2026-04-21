@@ -62,3 +62,19 @@ SurfaceFlinger 可以使用 OpenGL ES 合成 Layer，这需要占用并消耗 GP
 1.SurfaceFlinge r向 HWC 提供所有 Layer 的完整列表，让 HWC 根据其硬件能力，决定如何处理这些 Layer。  
 2.HWC 会为每个 Layer 标注合成方式，是通过 GPU 还是通过 HWC 合成。  
 3.SurfaceFlinger 负责先把所有注明 GPU 合成的 Layer 合成到一个输出 Buffer，然后把这个输出 Buffer 和其他 Layer（注明 HWC 合成的 Layer）一起交给 HWC，让 HWC 完成剩余 Layer 的合成和显示。
+# meminfo
+当出现内存偏高或其他内存相关的问题时，我们可以通过 meminfo 来缩小范围、查找潜在的风险点  
+获取方式：adb shell dumpsys meminfo <pkg>  
+meminfo统计：  
+![image](https://github.com/user-attachments/assets/2c26f42e-2494-4f9b-80ef-0460746b48ef)  
+对照 meminfo 来看：  
+  ![image](https://github.com/user-attachments/assets/594eb71d-63d4-4701-9ff7-118565932f28)  
+纵轴：  
+![image](https://github.com/user-attachments/assets/52028878-2de4-4f24-8b63-7c674513f70e)  
+横轴：  
+![image](https://github.com/user-attachments/assets/95f30ffb-ce1a-4321-a7f1-851bd3f5fc59)  
+App Summary:  
+![image](https://github.com/user-attachments/assets/2a57c902-f440-455b-bd04-0697365c48e7)
+# hprof
+heap profile，是某一时间点，应用进程堆转存生成的文件，包含了这一时间点的内存快照；当需要进一步拆解内存、定位问题时，进行获取并分析    
+![image](https://github.com/user-attachments/assets/4ba978f7-7d5d-44a4-b06a-24d684ff6145)
