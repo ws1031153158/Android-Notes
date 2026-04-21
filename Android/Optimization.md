@@ -31,6 +31,7 @@
 ### 大图压缩
 ### Bitmap 复用（inBitmap）
 ### 堆外内存管理
+### Large Heap 策略
 ## 内存抖动
 ### 频繁 GC
 ### 对象池复用
@@ -42,8 +43,20 @@
 ### Glide/Coil 配置
 ## Large Object 频繁分配
 ## 内存碎片化
+### Java 堆碎片化
+### Native 堆碎片化
+### 碎片化检测
+### 碎片整理策略
 ## 后台进程内存占用
+### 主动内存收缩
+### 内存快照对比分析
+### 子进程内存预算管控
+### 进程保活与内存代价
 ## 匿名内存（Anonymous Memory）增长异常
+### Native 内存泄漏
+### 线程数量膨胀
+### JNI 层 GlobalRef 未释放
+### 匿名 mmap 滥用
 ## Native 内存
 ### malloc/free 泄漏
 ### Jemalloc
