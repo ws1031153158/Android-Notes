@@ -9,6 +9,10 @@
 ## OOM
 ## 内存抖动
 ## Bitmap优化
+## Large Object 频繁分配
+## 内存碎片化
+## 后台进程内存占用
+## 匿名内存（Anonymous Memory）增长异常
 # 渲染优化	
 ## 卡顿
 ## 掉帧
