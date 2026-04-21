@@ -78,19 +78,12 @@
 ### 主线程 IO/网络/锁等待
 ## 卡顿监控	
 ### Looper 消息监控
-### Choreographer 帧监控
 ### WatchDog 机制
-### FrameMetrics API
-### Janky Frame 分析
-## 锁竞争	
-### 死锁检测
-### synchronized 优化
-### 锁粒度控制
 ## Binder 
 ### 调用	Binder 线程池耗尽
 ### 跨进程调用耗时监控
 ## 系统调用	
-### SharedPreferences 优化（MMKV 替代）
+### 主线程SP读写（MMKV 替代）
 ### 文件 IO 异步化
 ## 线程调度	
 ### 线程优先级
@@ -100,6 +93,10 @@
 ### Handler 消息积压
 ### IdleHandler 合理使用
 # 渲染优化	
+## 帧率优化
+### Choreographer 帧监控
+### FrameMetrics API
+### Janky Frame 分析
 ## 布局优化
 ### ConstraintLayout 减少层级
 ### Merge/ViewStub
@@ -227,6 +224,8 @@ AAB 构建	App Bundle 按需下发、语言/屏幕密度分包
 ## 死锁检测	
 ### 锁顺序规范
 ### DeadlockDetector
+### synchronized 优化
+### 锁粒度控制
 ## 异步框架	
 ### RxJava 线程切换
 ### LiveData/Flow 线程安全
