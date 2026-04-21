@@ -1,6 +1,16 @@
 # 启动优化	
 ## 冷启动
+### 页面合并
+![image](https://github.com/user-attachments/assets/09208ec8-740e-4656-9fc0-a2d092fe5943)    
+利用读取开屏信息和等待广告的时间，做一些与 Activity 强关联的并发任务，比如异步 View 预加载，数据加载等  
+![image](https://github.com/user-attachments/assets/2e245352-19fd-4d3f-a980-2107d941acb7)  
+MainAcitvity 的 launch mode 需要设置为 singleTop，否则会出现 App 从后台进前台，非 MainActivity 走生命周期的现象  
+跳转到 MainAcitvity 之后，其他二级页面需要全部都关闭掉，站内跳转到 MainActivity 则附带 CLEAR_TOP | NEW_TASK 的标记 
 ### Application onCreate 优化
+#### 视觉
+原生逻辑是冷启动过程中会创建一个空白的 Window，等到应用创建第一个 Activity 后才将该 Window 替换    
+如果 Application 或 Activity 启动的过程太慢，导致系统的 BackgroundWindow 没有及时被替换，就会出现启动时白屏或黑屏的情况      
+可以设置预览图、自定义 Theme 等优化用户等待加载时的观感
 ### ContentProvider 优化
 ### MultiDex 优化
 ## 热启动/温启动
@@ -8,13 +18,32 @@
 ### 进程保活策略
 ## 启动任务编排
 ### 有向无环图（DAG）任务依赖
+### IdleHandler
+可以在 MessageQueue 空闲的时候执行任务  
+![image](https://github.com/user-attachments/assets/9f4a2fbb-11f5-4495-bd93-c6eee56e9e0d)  
+1.在启动的过程中，可以借助 idleHandler 来做一些延迟加载的事情， 比如在启动过程中 Activity 的 onCreate 里面 addIdleHandler，这样在 Message 空闲的时候，可以执行这个任务  
+2.进行启动时间统计：比如在页面完全加载之后，调用 activity.reportFullyDrawn 来告知系统这个 Activity 已经完全加载，用户可以使用了，比如在主页的 List 加载完成后，调用 activity.reportFullyDrawn  
 ### 异步并行初始化
-### 启动框架（Alpha/Anchors）
+#### 异步 init
+![image](https://github.com/user-attachments/assets/00093f59-fd7c-44fb-9fdc-fc4f116f56c2)   
+将 init 分为多个子 task 放在子 thread（提交到线程池），task 之间无依赖关系     
+此外，若 init 在 Application.onCreate 结束前完成，可用 CountDownLatch 等待 task 执行  
+![image](https://github.com/user-attachments/assets/1d9c5cb5-9197-4da4-9843-7efb5e08b8f2)    
+根据依赖关系排序生成有向无环图，最后由优先级执行 task。任务可以分为（init 前、后，空闲，子、主线程等 task）       
+![image](https://github.com/user-attachments/assets/850fa3c3-02b0-456f-90d4-96fd73ba98c6)  
+#### 延迟 init
+优先级不高，可在启动完成后执行的 init task延迟到启动完成后执行（如 handler.postdelay），但延迟后的页面加载完成可能造成手势失效（如滑动）。  
+此外，init launcher 利用 IdleHandler 实现主线程空闲时执行任务，不影响用户操作。    
+![image](https://github.com/user-attachments/assets/4b555acb-2c7d-4545-8327-8a93b4b853a6)
+### 启动框架（Alpha/Anchors） 
 ## 闪屏优化
 ### WindowBackground 预加载
 ### 避免白屏/黑屏
 ## 类加载优化
 ### 类预加载
+一个类的加载耗时不多，但是在几百上千的基数上，也会延迟启动时间，将进入首页的 class 对象，使用线程池提前预加载进来，在类下次使用时则可以直接使用而不需要触发类加载   
+Class.forName() 只加载类本身以及静态变量的引用类，new 类实例可以额外加载类成员变量的引用类  
+确定哪些类需要提前加载，可以切换系统的 ClassLoader，在自定义 ClassLoader 里面每个类 load 时加一个 log，在项目中运行一次，这样就可以拿到所有 log，也就是需要异步加载的类  
 ### Dex 重排（Facebook ReDex / 字节码插桩）
 ## 资源预加载
 ### 主题资源/字体/关键图片预加载
@@ -193,6 +222,9 @@ AAB 构建	App Bundle 按需下发、语言/屏幕密度分包
 ### 耗电归因
 # 存储优化	
 ## SharedPreferences	
+sharedPreferences 是一个 xml 的读取和存储操作，在使用前都会调用 getSharedPreferences 方法，这时它会去异步加载文件当中的配置文件，load 到内存当中，调用 get 或 put 属性时，如果 load 内存的操作没有执行完成，那么就会一直阻塞进行等待，都是拿同一把锁，它既然是 IO 操作，如果这文件存在很久，这个时间就会很长,如果项目比较大，有几十个类使用 SharedPreferences 文件，里面的文件也非常多   
+1.在 Application 中 MultiDex 之前加载 SharedPreferences（如果其他类在 Multidex 之前加载进行操作，会因为一些类不在主 dex 当中，导致崩溃，Sharedpreferences 是系统类，不会报错）   
+2.创建 SharedPreferences 并且保存到 Map 中，那么需要的时候可以在 SP_MAP 中直接获取
 ### ANR 风险
 ### MMKV/DataStore 替代方案
 ## 数据库优化	
