@@ -26,6 +26,46 @@ Activity#onWindowFocusChanged() 这个方法的调用时机是用户与 Activity
 })  
 ## 冷启动
 冷启动：进程不存在，应用自设备启动后或系统终止应用后首次启动，耗时最多，是衡量启动耗时的标准  
+### 完整流程
+用户点击图标  
+     │  
+     ▼  
+① Launcher 进程  
+   └─ startActivity() → AMS (Binder 跨进程)  
+     │  
+     ▼  
+② system_server 进程  
+   └─ AMS 处理请求  
+   └─ 检查进程是否存在 → 不存在  
+   └─ 通知 Zygote fork 进程  
+     │  
+     ▼  
+③ Zygote fork 新进程  
+   └─ 复制 Zygote 预加载资源（类、资源、so）  
+   └─ 创建 App 进程  
+     │  
+     ▼  
+④ App 进程初始化  
+   └─ ActivityThread.main()  
+   └─ 创建 Application  
+   └─ attachBaseContext()  
+   └─ installContentProviders()  ← 坑点！  
+   └─ Application.onCreate()  
+     │  
+     ▼  
+⑤ Activity 创建    
+   └─ Activity.onCreate()  
+   └─ setContentView() → inflate 布局  
+   └─ onStart() → onResume()  
+     │  
+     ▼  
+⑥ 首帧渲染  
+   └─ measure → layout → draw  
+   └─ RenderThread 提交 GPU  
+   └─ SurfaceFlinger 合成上屏  
+     │  
+     ▼  
+⑦ 用户看到第一帧 ← 冷启动结束  
 ### 页面合并
 ![image](https://github.com/user-attachments/assets/09208ec8-740e-4656-9fc0-a2d092fe5943)    
 利用读取开屏信息和等待广告的时间，做一些与 Activity 强关联的并发任务，比如异步 View 预加载，数据加载等  
