@@ -1,32 +1,9 @@
 # 启动优化	     
-## 启动阶段
-![image](https://github.com/user-attachments/assets/5ec9b45f-770c-4560-be5b-c8be4af1e3a5)  
-### Application     
-bindApplication：APP 进程由 zygote 进程 fork 出来后会执行 ActivityThread 的 main 方法，该方法最终触发执行 bindApplication()，这也是 Application 阶段的起点   
-attachBaseContext：在应用中最早能触达到的生命周期，本阶段也是最早的预加载时机   
-installProvider：很多三方 sdk 借助该时机来做初始化操作
-onCreate：这里有很多三方库和业务的初始化操作，是 Application 阶段的末尾   
-### Activity
-创建主 Activity 并且执行相关生命周期方法      
-Activity 阶段最关键的生命周期是 onCreate()，这个阶段中包含了大量的 UI 构建、首页相关业务、对象初始化等耗时任务
-### 绘制
-来到 View 构建的阶段，该阶段也是比较耗时  
-View 的整体渲染阶段，涵盖 measure、layout、draw 三部分  
-最后是首屏数据加载阶段，这部分涵盖非常多数据相关的操作  
-### 首帧
-我们在应用中能触达到的 attachBaseContext 阶段，这是最早的预加载时机   
-可以把这个方法的回调时间当作启动开始时间，因为 attachBaseContext() 是应用进程的第一个生命周期，但是准确来说，应用的启动时间包括进程创建，应该在冷启动时用户点击应用 Icon 开始计算   
-Activity#onWindowFocusChanged() 这个方法的调用时机是用户与 Activity 交互的最佳时间点，当 Activity 中的 View 测量绘制完成之后会回调 Activity 的 onWindowFocusChanged() 方法，可以选择它来当作时间结束的时间点   
-但是大部分数据是通过请求接口回来之后，才能填充页面才能显示出来，当执行到 onWindowFocusChanged() 的时候，请求数据还没完成，页面上依旧是没有数据的，用户仅仅可以交互写死在 XML 布局当中的视图，更多的内容还是不可见，不可交互的   
-所以结束时间点通常选择在列表上面第一个 itemView 的 perDrawCallback() 方法的回调时机当作时间结束点，也就是首帧时间。当列表上面第一个 itemView 被显示出来的时候说明网络请求已经完成。页面上的 View 已经填充了数据，并且开始重新渲染了。此时用户是可以交互的，这个才是比较有意义的时间节点，可以通过监听 itemView.viewTreeObserver.addOnPreDrawListener(object :    
- ViewTreeObserver.OnPreDrawListener {  
-    override fun onPreDraw(): Boolean {  
-        return false  
-    }  
-})  
 ## 冷启动
 冷启动：进程不存在，应用自设备启动后或系统终止应用后首次启动，耗时最多，是衡量启动耗时的标准  
 ### 完整流程
+![image](https://github.com/user-attachments/assets/5ec9b45f-770c-4560-be5b-c8be4af1e3a5)    
+
 用户点击图标  
      │  
      ▼  
@@ -42,21 +19,21 @@ Activity#onWindowFocusChanged() 这个方法的调用时机是用户与 Activity
      ▼  
 ③ Zygote fork 新进程  
    └─ 复制 Zygote 预加载资源（类、资源、so）  
-   └─ 创建 App 进程  
+   └─ 创建 App 进程 ← APP 进程由 zygote 进程 fork 出来后会执行 ActivityThread 的 main 方法，该方法最终触发执行 bindApplication()，这也是 Application 阶段的起点  
      │  
      ▼  
 ④ App 进程初始化  
    └─ ActivityThread.main()  
    └─ 创建 Application  
-   └─ attachBaseContext()  
-   └─ installContentProviders()  ← 坑点！  
-   └─ Application.onCreate()  
+   └─ attachBaseContext() ← 在应用中最早能触达到的生命周期，本阶段也是最早的预加载时机    
+   └─ installContentProviders() ← 很多三方 sdk 借助该时机来做初始化操作  
+   └─ Application.onCreate() ← 这里有很多三方库和业务的初始化操作，是 Application 阶段的末尾
      │  
      ▼  
 ⑤ Activity 创建    
    └─ Activity.onCreate()  
    └─ setContentView() → inflate 布局  
-   └─ onStart() → onResume()  
+   └─ onCreate() → onStart() → onResume() ← Activity 阶段最关键的生命周期是 onCreate()，这个阶段中包含了大量的 UI 构建、首页相关业务、对象初始化等耗时任务  
      │  
      ▼  
 ⑥ 首帧渲染  
@@ -66,19 +43,69 @@ Activity#onWindowFocusChanged() 这个方法的调用时机是用户与 Activity
      │  
      ▼  
 ⑦ 用户看到第一帧 ← 冷启动结束  
-### 页面合并
+### 系统指标
+adb 测量冷启动时间：  
+adb shell am start -W -n com.xxx/.MainActivity  
+输出结果：  
+ThisTime:   xxx ms  ← 最后一个 Activity 启动耗时  
+TotalTime:  xxx ms  ← 整个启动过程耗时（重点关注）  
+WaitTime:   xxx ms  ← 包含 Launcher 响应时间  
+### 埋点
+我们在应用中能触达到的 attachBaseContext 阶段，这是最早的预加载时机：    
+可以把这个方法的回调时间当作启动开始时间，因为 attachBaseContext() 是应用进程的第一个生命周期，但是准确来说，应用的启动时间包括进程创建，应该在冷启动时用户点击应用 Icon 开始计算。  
+override fun attachBaseContext(base: Context) {  
+     super.attachBaseContext(base)  
+     appStartTime = SystemClock.elapsedRealtime()  
+}  
+  
+Activity#onWindowFocusChanged() 这个方法的调用时机是用户与 Activity 交互的最佳时间点，当 Activity 中的 View 测量绘制完成之后会回调 Activity 的 onWindowFocusChanged() 方法，可以选择它来当作时间结束的时间点：   
+override fun onWindowFocusChanged(hasFocus: Boolean) {  
+   super.onWindowFocusChanged(hasFocus)  
+      if (hasFocus) {  
+          val cost = SystemClock.elapsedRealtime() - MyApplication.appStartTime  
+          // 上报启动耗时  
+          Logger.report("cold_start_cost", cost)  
+     }  
+}  
+
+但是大部分数据是通过请求接口回来之后，才能填充页面才能显示出来，当执行到 onWindowFocusChanged() 的时候，请求数据还没完成，页面上依旧是没有数据的，用户仅仅可以交互写死在 XML 布局当中的视图，更多的内容还是不可见，不可交互的   
+所以结束时间点通常选择在列表上面第一个 itemView 的 perDrawCallback() 方法的回调时机当作时间结束点，也就是首帧时间。当列表上面第一个 itemView 被显示出来的时候说明数据加载已经完成。页面上的 View 已经填充了数据，并且开始重新渲染了。此时用户是可以交互的，这个才是比较有意义的时间节点，可以通过监听 itemView.viewTreeObserver.addOnPreDrawListener(object :    
+ ViewTreeObserver.OnPreDrawListener {  
+    override fun onPreDraw(): Boolean {  
+        return false  
+    }  
+})    
+
+或者通过 vm 监听：  
+viewModel.dataReady.observe(this) { ready ->  
+    if (ready) {  
+        reportFullyDrawn() // 上报真实首屏时间  
+    }  
+}  
+### 优化策略
+#### 页面合并
 ![image](https://github.com/user-attachments/assets/09208ec8-740e-4656-9fc0-a2d092fe5943)    
 利用读取开屏信息和等待广告的时间，做一些与 Activity 强关联的并发任务，比如异步 View 预加载，数据加载等  
 ![image](https://github.com/user-attachments/assets/2e245352-19fd-4d3f-a980-2107d941acb7)  
 MainAcitvity 的 launch mode 需要设置为 singleTop，否则会出现 App 从后台进前台，非 MainActivity 走生命周期的现象  
 跳转到 MainAcitvity 之后，其他二级页面需要全部都关闭掉，站内跳转到 MainActivity 则附带 CLEAR_TOP | NEW_TASK 的标记 
-### Application onCreate 优化
-#### 视觉
+#### Zygote 阶段
+APP 开发者优化空间有限：  
+Zygote 预加载了：
+1.常用 Framework 类（几千个）  
+2.系统资源（主题、图片）  
+3.常用 so 库  
+  
+可优化点：
+1.减少 App 自身在此阶段的依赖  
+2.避免过早加载大型 so 库  
+#### Application onCreate 优化
+##### 视觉
 原生逻辑是冷启动过程中会创建一个空白的 Window，等到应用创建第一个 Activity 后才将该 Window 替换    
 如果 Application 或 Activity 启动的过程太慢，导致系统的 BackgroundWindow 没有及时被替换，就会出现启动时白屏或黑屏的情况      
 可以设置预览图、自定义 Theme 等优化用户等待加载时的观感
-### ContentProvider 优化
-### MultiDex 优化
+#### ContentProvider 优化
+#### MultiDex 优化
 ## 热启动/温启动
 1.温启动：进程存在，但是 Activity 需要重新创建（Activity 被销毁：如退出应用后又重新启动应用。进程可能还在运行/系统因内存不足等原因将应用回收，然后用户又重新启动这个应用）   
 2.热启动：进程存在，Activity 在后台，只需要走 onStart，但是如果一些内存为响应内存整理事件（如 onTrimMemory()）而被完全清除，则需要为了响应热启动而重新创建相应的对象，热启动显示的屏幕上行为和冷启动场景相同。系统进程显示空白屏幕，直到应用完成 Activity 呈现  
