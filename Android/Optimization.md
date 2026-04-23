@@ -170,6 +170,133 @@ abstract class StartupTask {
     abstract suspend fun run(context: Context)
 }
 ```
+
+```
+# 调度器
+class StartupScheduler(private val context: Context) {
+
+    // 所有注册的任务
+    private val taskMap = mutableMapOf<String, StartupTask>()
+    
+    // 每个任务的剩余未完成依赖计数
+    private val dependencyCount = mutableMapOf<String, AtomicInteger>()
+    
+    // 每个任务完成后，需要通知哪些后续任务
+    private val dependents = mutableMapOf<String, MutableList<String>>()
+    
+    // 协程 Job 管理
+    private val taskJobs = mutableMapOf<String, Job>()
+    
+    // 主线程任务队列
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    fun register(vararg tasks: StartupTask): StartupScheduler {
+        tasks.forEach { taskMap[it.id] = it }
+        return this
+    }
+
+    suspend fun start() {
+        // 1. 构建依赖图
+        buildGraph()
+        
+        // 2. 找出所有入度为0的任务（无依赖，可立即执行）
+        val readyTasks = dependencyCount
+            .filter { it.value.get() == 0 }
+            .keys
+            .toList()
+        
+        // 3. 使用 coroutineScope 等待所有任务完成
+        coroutineScope {
+            readyTasks.forEach { taskId ->
+                launchTask(taskId, this)
+            }
+        }
+        
+        println("🎉 所有启动任务完成！")
+    }
+
+    private fun buildGraph() {
+        // 初始化每个任务的依赖计数
+        taskMap.keys.forEach { id ->
+            dependencyCount[id] = AtomicInteger(0)
+            dependents[id] = mutableListOf()
+        }
+        
+        // 构建反向依赖图
+        // 例：userInfo 依赖 network
+        // → dependents[network] 中加入 userInfo
+        // → dependencyCount[userInfo]++
+        taskMap.values.forEach { task ->
+            task.dependencies.forEach { depId ->
+                dependents[depId]?.add(task.id)
+                dependencyCount[task.id]?.incrementAndGet()
+            }
+        }
+        
+        // 打印依赖图（调试用）
+        println("📊 依赖图构建完成:")
+        taskMap.keys.forEach { id ->
+            println("  $id → 依赖数:${dependencyCount[id]?.get()} " +
+                    "→ 后续任务:${dependents[id]}")
+        }
+    }
+
+    private fun launchTask(taskId: String, scope: CoroutineScope) {
+        val task = taskMap[taskId] ?: return
+        
+        val job = if (task.runOnMainThread) {
+            // 主线程任务
+            scope.launch(Dispatchers.Main) {
+                executeTask(task, scope)
+            }
+        } else {
+            // IO/Default 线程任务，按优先级分配
+            val dispatcher = if (task.priority > 5) {
+                Dispatchers.Default
+            } else {
+                Dispatchers.IO
+            }
+            scope.launch(dispatcher) {
+                executeTask(task, scope)
+            }
+        }
+        
+        taskJobs[taskId] = job
+    }
+
+    private suspend fun executeTask(
+        task: StartupTask, 
+        scope: CoroutineScope
+    ) {
+        val startTime = SystemClock.elapsedRealtime()
+        
+        try {
+            task.run(context)
+        } catch (e: Exception) {
+            println("❌ 任务 ${task.id} 执行失败: ${e.message}")
+        }
+        
+        val cost = SystemClock.elapsedRealtime() - startTime
+        println("⏱ 任务 ${task.id} 耗时 ${cost}ms")
+        
+        // 任务完成，通知后续任务
+        onTaskFinished(task.id, scope)
+    }
+
+    private fun onTaskFinished(taskId: String, scope: CoroutineScope) {
+        // 遍历所有依赖此任务的后续任务
+        dependents[taskId]?.forEach { dependentId ->
+            val remaining = dependencyCount[dependentId]?.decrementAndGet()
+            
+            // 如果后续任务的所有依赖都完成了，立即启动它
+            if (remaining == 0) {
+                println("🚀 任务 $dependentId 的依赖全部满足，开始执行")
+                launchTask(dependentId, scope)
+            }
+        }
+    }
+}
+```
 ### IdleHandler
 可以在 MessageQueue 空闲的时候执行任务  
 ![image](https://github.com/user-attachments/assets/9f4a2fbb-11f5-4495-bd93-c6eee56e9e0d)  
