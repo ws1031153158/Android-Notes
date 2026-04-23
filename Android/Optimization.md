@@ -91,14 +91,36 @@ MainAcitvity 的 launch mode 需要设置为 singleTop，否则会出现 App 从
 跳转到 MainAcitvity 之后，其他二级页面需要全部都关闭掉，站内跳转到 MainActivity 则附带 CLEAR_TOP | NEW_TASK 的标记 
 #### Zygote 阶段
 APP 开发者优化空间有限：  
-Zygote 预加载了：
-1.常用 Framework 类（几千个）  
-2.系统资源（主题、图片）  
+系统启动时 Zygote 预加载了：  
+1.常用 Framework 类（/system/etc/preloaded-classes：几千个）  
+2.系统资源（framework-res.apk：主题、图片）  
 3.常用 so 库  
+
+App 启动时 fork Zygote：  
+1.子进程直接继承父进程内存页（Copy-on-Write）  
+2.已预加载的类/资源 → 零成本复用  
+3.App 自己的类/资源 → 需要重新加载 ← 这里是瓶颈  
   
-可优化点：
-1.减少 App 自身在此阶段的依赖  
-2.避免过早加载大型 so 库  
+可优化点：  
+减少 App 自身在此阶段的依赖（需要重新加载的自己的资源/类）：
+三方 so 库：  
+System.loadLibrary("xxx")  
+每个 so 的加载 = 文件读取 + 符号解析 + 重定位  
+大型 so (如 Flutter engine ~8MB) 耗时明显  
+
+三方 SDK 的类：  
+不在 Zygote 预加载列表中  
+首次访问触发类加载 + 验证 + 初始化  
+
+App 自定义资源：  
+非系统资源，Zygote 不会预加载  
+
+JNI_OnLoad 调用链：  
+so 加载后自动触发，可能有大量初始化逻辑  
+  
+所以避免过早加载大型 so 库、SDK等：  
+1.按需加载：用到时再加载，例如进入某页面前、使用某工具前... ...  
+2.异步加载：子线程提前加载非主线程依赖的so
 #### Application onCreate 优化
 ##### 视觉
 原生逻辑是冷启动过程中会创建一个空白的 Window，等到应用创建第一个 Activity 后才将该 Window 替换    
@@ -125,6 +147,20 @@ Zygote 预加载了：
 ### 有向无环图（DAG）任务依赖
 根据依赖关系排序生成有向无环图，最后由优先级执行 task。任务可以分为（init 前、后，空闲，子、主线程等 task）       
 ![image](https://github.com/user-attachments/assets/850fa3c3-02b0-456f-90d4-96fd73ba98c6)    
+
+例如：  
+<img width="477" height="485" alt="image" src="https://github.com/user-attachments/assets/4c6d27c3-4e52-49ed-b0a5-2d75232e6095" />
+
+```
+# 任务基类
+abstract class StartupTask {
+    abstract val id: String
+    open val dependencies: List<String> = emptyList()
+    open val runOnMainThread: Boolean = false
+    open val priority: Int = 0
+    abstract suspend fun run(context: Context)
+}
+```
 ### IdleHandler
 可以在 MessageQueue 空闲的时候执行任务  
 ![image](https://github.com/user-attachments/assets/9f4a2fbb-11f5-4495-bd93-c6eee56e9e0d)  
