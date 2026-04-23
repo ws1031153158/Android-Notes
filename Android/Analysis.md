@@ -89,3 +89,262 @@ App Summary:
 # hprof
 heap profile，是某一时间点，应用进程堆转存生成的文件，包含了这一时间点的内存快照；当需要进一步拆解内存、定位问题时，进行获取并分析    
 ![image](https://github.com/user-attachments/assets/4ba978f7-7d5d-44a4-b06a-24d684ff6145)
+# 埋点体系
+## 目标
+1.精准定位每个阶段耗时  
+2.线上可采集（低开销）  
+3.与业务代码解耦  
+4.支持多维度分析（启动/页面/网络/渲染）  
+## 分层
+Layer 1: 系统级（Perfetto 自动采集，无需代码）  
+Layer 2: 框架级（SDK/基础库关键路径）  
+Layer 3: 业务级（具体业务模块）  
+## 埋点实现
+```
+// ================================
+// 核心封装：TraceCompat
+// 同时支持线上（轻量）和 Perfetto（详细）
+// ================================
+object AppTrace {
+    
+    // 是否开启详细追踪（Debug/测试环境开启）
+    private var detailEnabled = BuildConfig.DEBUG
+    
+    // 线上轻量追踪（始终开启，极低开销）
+    private val onlineTracer = OnlineTracer()
+    
+    inline fun section(tag: String, block: () -> Unit) {
+        begin(tag)
+        try {
+            block()
+        } finally {
+            end()
+        }
+    }
+    
+    fun begin(tag: String) {
+        // 1. Perfetto/Systrace 追踪（仅 Debug）
+        if (detailEnabled) {
+            TraceCompat.beginSection(tag)
+        }
+        // 2. 线上时间戳记录（始终执行，开销极小）
+        onlineTracer.begin(tag)
+    }
+    
+    fun end() {
+        if (detailEnabled) {
+            TraceCompat.endSection()
+        }
+        onlineTracer.end()
+    }
+    
+    // 异步追踪（用于跨线程的事件）
+    fun beginAsync(tag: String, cookie: Int) {
+        if (detailEnabled) {
+            TraceCompat.beginAsyncSection(tag, cookie)
+        }
+        onlineTracer.beginAsync(tag, cookie)
+    }
+    
+    fun endAsync(tag: String, cookie: Int) {
+        if (detailEnabled) {
+            TraceCompat.endAsyncSection(tag, cookie)
+        }
+        onlineTracer.endAsync(tag, cookie)
+    }
+}
+```
+
+```
+// 线上环境：不使用 Perfetto（用户设备无法抓trace）
+// 改为：记录时间戳，启动结束后批量上报
+class OnlineTracer {
+    
+    data class TraceEvent(
+        val tag: String,
+        val startTime: Long,
+        var endTime: Long = 0,
+        val threadName: String = Thread.currentThread().name
+    )
+    
+    // 使用 ThreadLocal 避免锁竞争
+    private val threadLocalStack = ThreadLocal<ArrayDeque<TraceEvent>>()
+    
+    // 已完成的事件（线程安全）
+    private val completedEvents = ConcurrentLinkedQueue<TraceEvent>()
+    
+    fun begin(tag: String) {
+        val stack = threadLocalStack.get() ?: ArrayDeque<TraceEvent>().also {
+            threadLocalStack.set(it)
+        }
+        stack.addLast(TraceEvent(
+            tag = tag,
+            startTime = SystemClock.elapsedRealtime()
+        ))
+    }
+    
+    fun end() {
+        val stack = threadLocalStack.get() ?: return
+        val event = stack.removeLastOrNull() ?: return
+        event.endTime = SystemClock.elapsedRealtime()
+        completedEvents.add(event)
+    }
+    
+    // 生成上报数据
+    fun generateReport(): Map<String, Long> {
+        return completedEvents
+            .groupBy { it.tag }
+            .mapValues { (_, events) ->
+                events.sumOf { it.endTime - it.startTime }
+            }
+    }
+}
+```
+
+```
+// ================================
+// 启动阶段标准埋点
+// ================================
+class MyApplication : Application() {
+    
+    override fun attachBaseContext(base: Context) {
+        // 进程创建时间（最早的时间点）
+        StartupMonitor.markProcessStart()
+        super.attachBaseContext(base)
+        
+        AppTrace.begin("App:attachBaseContext")
+        // MultiDex 等操作
+        AppTrace.end()
+    }
+    
+    override fun onCreate() {
+        AppTrace.begin("App:Application.onCreate")
+        super.onCreate()
+        
+        AppTrace.section("App:initCrashSDK") {
+            CrashSDK.init(this)
+        }
+        
+        AppTrace.section("App:initRouter") {
+            Router.init(this)
+        }
+        
+        AppTrace.section("App:initImageLoader") {
+            ImageLoader.init(this)
+        }
+        
+        // 异步任务用异步追踪
+        val cookie = System.identityHashCode(this)
+        AppTrace.beginAsync("App:asyncInit", cookie)
+        GlobalScope.launch(Dispatchers.IO) {
+            PushSDK.init(this@MyApplication)
+            AppTrace.endAsync("App:asyncInit", cookie)
+        }
+        
+        AppTrace.end() // Application.onCreate 结束
+    }
+}
+```
+
+```
+// ================================
+// Activity 生命周期自动埋点
+// 通过 ActivityLifecycleCallbacks 统一注入
+// 无需每个 Activity 手动添加
+// ================================
+class PerformanceLifecycleCallback : Application.ActivityLifecycleCallbacks {
+    
+    private val activityStartTime = WeakHashMap<Activity, Long>()
+    
+    override fun onActivityCreated(activity: Activity, bundle: Bundle?) {
+        val tag = "Activity:${activity.javaClass.simpleName}.onCreate"
+        AppTrace.begin(tag)
+        activityStartTime[activity] = SystemClock.elapsedRealtime()
+    }
+    
+    override fun onActivityStarted(activity: Activity) {
+        // onCreate 结束，onStart 开始
+        AppTrace.end() // 结束 onCreate 的 section
+        AppTrace.begin("Activity:${activity.javaClass.simpleName}.onStart")
+    }
+    
+    override fun onActivityResumed(activity: Activity) {
+        AppTrace.end() // 结束 onStart
+        AppTrace.begin("Activity:${activity.javaClass.simpleName}.onResume")
+    }
+    
+    override fun onActivityWindowFocusChanged(
+        activity: Activity, 
+        hasFocus: Boolean
+    ) {
+        if (hasFocus) {
+            AppTrace.end() // 结束 onResume
+            
+            // 首帧时间（最关键指标）
+            val startTime = activityStartTime[activity] ?: return
+            val firstFrameTime = SystemClock.elapsedRealtime() - startTime
+            
+            StartupMonitor.reportFirstFrame(
+                activityName = activity.javaClass.simpleName,
+                costMs = firstFrameTime
+            )
+        }
+    }
+    
+    // 其他回调省略...
+}
+
+// Application 中注册
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        registerActivityLifecycleCallbacks(PerformanceLifecycleCallback())
+    }
+}
+```
+
+```
+object StartupMonitor {
+    
+    private var processStartTime = 0L
+    private var appCreateEndTime = 0L
+    private var firstFrameTime = 0L
+    
+    fun markProcessStart() {
+        processStartTime = SystemClock.elapsedRealtime()
+    }
+    
+    fun markAppCreateEnd() {
+        appCreateEndTime = SystemClock.elapsedRealtime()
+    }
+    
+    fun reportFirstFrame(activityName: String, costMs: Long) {
+        firstFrameTime = SystemClock.elapsedRealtime()
+        
+        val report = StartupReport(
+            // 总冷启动耗时
+            totalCost = firstFrameTime - processStartTime,
+            // Application 阶段耗时
+            appCost = appCreateEndTime - processStartTime,
+            // Activity 到首帧耗时
+            activityCost = costMs,
+            // 各阶段明细
+            details = AppTrace.onlineTracer.generateReport(),
+            // 设备信息
+            deviceModel = Build.MODEL,
+            androidVersion = Build.VERSION.SDK_INT,
+            // 是否低端机
+            isLowEndDevice = isLowEndDevice()
+        )
+        
+        // 上报到 APM 平台
+        APMReporter.report("cold_start", report)
+    }
+    
+    private fun isLowEndDevice(): Boolean {
+        val am = context.getSystemService(ActivityManager::class.java)
+        return am.isLowRamDevice || 
+               getTotalRam() < 3 * 1024L * 1024 * 1024 // 3GB以下
+    }
+}
+```
