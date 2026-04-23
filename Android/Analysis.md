@@ -8,6 +8,8 @@ adb shell perfetto --txt -c /data/misc/perfetto-configs/config.pbtx -o /data/mis
 Android 12 以下（直接通过文件路径传递配置文件在非 root 设备上会失败）：  
 adb push config.pbtx /data/local/tmp/config.pbtx   
 adb shell 'cat /data/local/tmp/config.pbtx | perfetto -c - -o /data/misc/perfetto-traces/trace.perfetto-trace'  
+## 自定义标记
+Trace.beginSection + Trace.endSection()，定位代码耗时
 ## MainThread/RenderThread
 一帧流程（60fps | 16.6ms）：  
 1.主线程接到 Vsync 信号（一个 Message 来唤醒），Choreographe r回调 onVsync 开始一帧的绘制  
