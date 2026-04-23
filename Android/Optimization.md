@@ -169,7 +169,41 @@ class HeavySDKInitializer : Initializer<Unit> {
 
 #### MultiDex 优化
 异步加载 Secondary Dex：  
-在主线程加载 main.Dex(主 Dex，包含启动必需类) ,开启子线程异步加载 Secondary Dex,若主线程需要 Secondary Dex 中的类，则等待加载完成
+在主线程加载 main.Dex(主 Dex，包含启动必需类) ,开启子线程异步加载 Secondary Dex,若主线程需要 Secondary Dex 中的类，则等待加载完成，Android 5.0 以上此缺陷几乎可以忽略了，价值不大。
+
+dex2oat：  
+Dalvik Executable to Optimized ART file：  
+1.将 DEX 字节码预编译为本地机器码。应用程序不再完全依赖解释器执行，而是直接运行机器码，从而提高代码运行速度。  
+2.将输入的 dex 文件预编译为 .oat 的本地镜像文件（），加快应用程序的启动速度。    
+
+触发场景：  
+1.OTA升级：发布Baseline Profile 让系统触发 dex2oat(Android 11 开始 Google 禁止应用侧触发 dex2oat)。    
+2.应用首次安装：系统自动调用 dex2oat 对 DEX 字节码进行预编译，提高后续使用时的流畅度。      
+3.系统空闲：当手机充电且空闲时，后台运行 dex2oat 进行更深度的优化。  
+
+```
+// Baseline Profile
+// 在 macrobenchmark 测试中生成
+@ExperimentalBaselineProfilesApi
+class BaselineProfileGenerator {
+    @get:Rule
+    val rule = BaselineProfileRule()
+
+    @Test
+    fun generate() = rule.collect(
+        packageName = "com.xxx.app"
+    ) {
+        // 描述启动路径，让编译器提前AOT编译这些代码
+        pressHome()
+        startActivityAndWait()
+        // 模拟用户启动后的关键操作路径
+        device.findObject(By.text("首页")).click()
+    }
+}
+// 生成的 baseline-prof.txt 打包进 APK
+// 安装时系统会对这些类/方法做 AOT 编译
+// 首次启动即享受 AOT 性能
+```
 ## 热启动/温启动
 1.温启动：进程存在，但是 Activity 需要重新创建（Activity 被销毁：如退出应用后又重新启动应用。进程可能还在运行/系统因内存不足等原因将应用回收，然后用户又重新启动这个应用）   
 2.热启动：进程存在，Activity 在后台，只需要走 onStart，但是如果一些内存为响应内存整理事件（如 onTrimMemory()）而被完全清除，则需要为了响应热启动而重新创建相应的对象，热启动显示的屏幕上行为和冷启动场景相同。系统进程显示空白屏幕，直到应用完成 Activity 呈现  
