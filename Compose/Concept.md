@@ -75,4 +75,30 @@ onLayout = onGloballyPositioned
 onConfigurationChanged 等依然存在：  
 1.在 Activity 里正常写逻辑  
 2.在 Compose 里用：val configuration = LocalConfiguration.current，状态一变，Compose 自动重组
+## 性能对比
+### 方案差异
+XML - setContentView(R.layout.activity_main)：  
+1.IO读取XML文件  
+2.XML解析（XmlPullParser）  
+3.反射创建View对象（Class.forName("android.widget.TextView")；constructor.newInstance()）  
+4.设置属性  
+5.添加到ViewTree  
 
+Compose - setContent { MainScreen() }：  
+1.直接执行 Kotlin 函数（无IO，无反射）  
+2.构建 SlotTable（Compose内部数据结构）  
+3.生成 LayoutNode 树（非View树）  
+4.测量/布局/绘制  
+
+但 Compose 运行时本身有初始化也有开销，所以极简页面性能差不多。  
+此外，Compose 并没有脱离 View 系统：  
+```
+Window
+  └── DecorView（View）
+        └── ComposeView（View）  ← setContent 挂载点
+              └── LayoutNode 树（Compose内部，非View）
+                    ├── LayoutNode（对应 Column）
+                    ├── LayoutNode（对应 Text）
+                    └── LayoutNode（对应 Button）
+```
+所以差异只在内部，ComposeView 也是个 View，ViewGroup 的一个子类，专门用于在传统的 Android View 体系（XML 布局）中承载、托管 Jetpack Compose UI 内容。
