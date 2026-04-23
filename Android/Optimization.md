@@ -430,6 +430,18 @@ adb shell logcat | grep "GC_" 查看启动期间 GC 情况
 2. 避免大对象分配（直接触发 GC）  
 3. 预分配关键对象（启动前置）
 ### 对象预分配
+预创建并复用的对象（对象池）  
+```
+private val bufferPool = ArrayDeque<ByteArray>()
+bufferPool.add(ByteArray(1024 * 1024)) // 预分配1MB缓冲
+
+fun acquireBuffer(): ByteArray = bufferPool.removeFirstOrNull() ?: ByteArray(1024 * 1024)
+    
+fun releaseBuffer(buffer: ByteArray) {
+     // 用完归还
+     bufferPool.addLast(buffer)
+}
+```
 ### GC 优化
 1.锁屏 GC  
 2.需要资源的特殊场景不 GC  
