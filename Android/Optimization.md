@@ -53,12 +53,15 @@ WaitTime:   xxx ms  ← 包含 Launcher 响应时间
 ### 埋点
 我们在应用中能触达到的 attachBaseContext 阶段，这是最早的预加载时机：    
 可以把这个方法的回调时间当作启动开始时间，因为 attachBaseContext() 是应用进程的第一个生命周期，但是准确来说，应用的启动时间包括进程创建，应该在冷启动时用户点击应用 Icon 开始计算。  
+```
 override fun attachBaseContext(base: Context) {  
      super.attachBaseContext(base)  
      appStartTime = SystemClock.elapsedRealtime()  
-}  
+}
+```
   
 Activity#onWindowFocusChanged() 这个方法的调用时机是用户与 Activity 交互的最佳时间点，当 Activity 中的 View 测量绘制完成之后会回调 Activity 的 onWindowFocusChanged() 方法，可以选择它来当作时间结束的时间点：   
+```
 override fun onWindowFocusChanged(hasFocus: Boolean) {  
    super.onWindowFocusChanged(hasFocus)  
       if (hasFocus) {  
@@ -66,22 +69,28 @@ override fun onWindowFocusChanged(hasFocus: Boolean) {
           // 上报启动耗时  
           Logger.report("cold_start_cost", cost)  
      }  
-}  
+}
+```
 
 但是大部分数据是通过请求接口回来之后，才能填充页面才能显示出来，当执行到 onWindowFocusChanged() 的时候，请求数据还没完成，页面上依旧是没有数据的，用户仅仅可以交互写死在 XML 布局当中的视图，更多的内容还是不可见，不可交互的   
-所以结束时间点通常选择在列表上面第一个 itemView 的 perDrawCallback() 方法的回调时机当作时间结束点，也就是首帧时间。当列表上面第一个 itemView 被显示出来的时候说明数据加载已经完成。页面上的 View 已经填充了数据，并且开始重新渲染了。此时用户是可以交互的，这个才是比较有意义的时间节点，可以通过监听 itemView.viewTreeObserver.addOnPreDrawListener(object :    
+所以结束时间点通常选择在列表上面第一个 itemView 的 perDrawCallback() 方法的回调时机当作时间结束点，也就是首帧时间。当列表上面第一个 itemView 被显示出来的时候说明数据加载已经完成。页面上的 View 已经填充了数据，并且开始重新渲染了。此时用户是可以交互的，这个才是比较有意义的时间节点，可以通过监听 
+```
+itemView.viewTreeObserver.addOnPreDrawListener(object :    
  ViewTreeObserver.OnPreDrawListener {  
     override fun onPreDraw(): Boolean {  
         return false  
     }  
-})    
+})
+```
 
 或者通过 vm 监听：  
+```
 viewModel.dataReady.observe(this) { ready ->  
     if (ready) {  
         reportFullyDrawn() // 上报真实首屏时间  
     }  
-}  
+}
+```
 ### 优化策略
 #### 页面合并
 ![image](https://github.com/user-attachments/assets/09208ec8-740e-4656-9fc0-a2d092fe5943)    
