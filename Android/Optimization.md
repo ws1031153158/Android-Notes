@@ -192,132 +192,166 @@ abstract class StartupTask {
     open val priority: Int = 0
     abstract suspend fun run(context: Context)
 }
-```
 
+调度器，拓扑排序检测循环依赖：  
 ```
-# 调度器
 class StartupScheduler(private val context: Context) {
 
-    // 所有注册的任务
     private val taskMap = mutableMapOf<String, StartupTask>()
-    
-    // 每个任务的剩余未完成依赖计数
-    private val dependencyCount = mutableMapOf<String, AtomicInteger>()
-    
-    // 每个任务完成后，需要通知哪些后续任务
-    private val dependents = mutableMapOf<String, MutableList<String>>()
-    
-    // 协程 Job 管理
-    private val taskJobs = mutableMapOf<String, Job>()
-    
-    // 主线程任务队列
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     fun register(vararg tasks: StartupTask): StartupScheduler {
         tasks.forEach { taskMap[it.id] = it }
         return this
     }
 
+    // 注册完成后，start() 前先做检测
     suspend fun start() {
-        // 1. 构建依赖图
-        buildGraph()
+        // 第一步：检测所有问题，有问题直接抛异常
+        validateGraph()
         
-        // 2. 找出所有入度为0的任务（无依赖，可立即执行）
-        val readyTasks = dependencyCount
-            .filter { it.value.get() == 0 }
-            .keys
-            .toList()
-        
-        // 3. 使用 coroutineScope 等待所有任务完成
-        coroutineScope {
-            readyTasks.forEach { taskId ->
-                launchTask(taskId, this)
-            }
-        }
-        
-        println("🎉 所有启动任务完成！")
+        // 第二步：正常调度
+        schedule()
     }
 
-    private fun buildGraph() {
-        // 初始化每个任务的依赖计数
-        taskMap.keys.forEach { id ->
-            dependencyCount[id] = AtomicInteger(0)
-            dependents[id] = mutableListOf()
-        }
+    // 图合法性全量检测
+    private fun validateGraph() {
+        // 检测1：依赖的任务是否都已注册
+        checkMissingDependencies()
         
-        // 构建反向依赖图
-        // 例：userInfo 依赖 network
-        // → dependents[network] 中加入 userInfo
-        // → dependencyCount[userInfo]++
+        // 检测2：是否存在循环依赖（Kahn拓扑排序）
+        checkCyclicDependencies()
+    }
+
+    // 检测1：缺失依赖
+    private fun checkMissingDependencies() {
+        val errors = mutableListOf<String>()
+        
         taskMap.values.forEach { task ->
             task.dependencies.forEach { depId ->
-                dependents[depId]?.add(task.id)
-                dependencyCount[task.id]?.incrementAndGet()
+                if (!taskMap.containsKey(depId)) {
+                    errors.add(
+                        "任务 [${task.id}] 依赖 [$depId]，" +
+                        "但 [$depId] 未注册！"
+                    )
+                }
             }
         }
         
-        // 打印依赖图（调试用）
-        println("📊 依赖图构建完成:")
-        taskMap.keys.forEach { id ->
-            println("  $id → 依赖数:${dependencyCount[id]?.get()} " +
-                    "→ 后续任务:${dependents[id]}")
+        if (errors.isNotEmpty()) {
+            throw IllegalStateException(
+                "启动任务依赖缺失：\n${errors.joinToString("\n")}"
+            )
         }
     }
 
-    private fun launchTask(taskId: String, scope: CoroutineScope) {
-        val task = taskMap[taskId] ?: return
+    // 检测2：循环依赖（Kahn 算法）
+    private fun checkCyclicDependencies() {
+        // 构建入度表
+        val inDegree = mutableMapOf<String, Int>()
+        taskMap.keys.forEach { inDegree[it] = 0 }
         
-        val job = if (task.runOnMainThread) {
-            // 主线程任务
-            scope.launch(Dispatchers.Main) {
-                executeTask(task, scope)
-            }
-        } else {
-            // IO/Default 线程任务，按优先级分配
-            val dispatcher = if (task.priority > 5) {
-                Dispatchers.Default
-            } else {
-                Dispatchers.IO
-            }
-            scope.launch(dispatcher) {
-                executeTask(task, scope)
+        taskMap.values.forEach { task ->
+            task.dependencies.forEach { depId ->
+                // task 依赖 depId
+                // 即 depId → task 这条边
+                // task 的入度 +1
+                inDegree[task.id] = (inDegree[task.id] ?: 0) + 1
             }
         }
-        
-        taskJobs[taskId] = job
+
+        // 将所有入度为 0 的节点加入队列
+        val queue: ArrayDeque<String> = ArrayDeque()
+        inDegree.forEach { (id, degree) ->
+            if (degree == 0) queue.add(id)
+        }
+
+        // Kahn 算法主循环
+        var processedCount = 0
+        val topoOrder = mutableListOf<String>() // 拓扑顺序（调试用）
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            topoOrder.add(current)
+            processedCount++
+
+            // 找到所有依赖 current 的任务
+            // 将它们的入度 -1
+            taskMap.values
+                .filter { it.dependencies.contains(current) }
+                .forEach { dependent ->
+                    val newDegree = (inDegree[dependent.id] ?: 0) - 1
+                    inDegree[dependent.id] = newDegree
+                    if (newDegree == 0) {
+                        queue.add(dependent.id)
+                    }
+                }
+        }
+
+        // 如果处理的节点数 < 总节点数
+        // 说明有节点的入度永远不为0 → 存在循环依赖
+        if (processedCount < taskMap.size) {
+            // 找出参与循环的节点
+            val cycleNodes = inDegree
+                .filter { it.value > 0 }
+                .keys
+
+            // 还原循环路径
+            val cyclePath = findCyclePath(cycleNodes)
+
+            throw IllegalStateException(
+                """
+                ❌ 启动任务存在循环依赖！
+                参与循环的任务：$cycleNodes
+                循环路径：$cyclePath
+                请检查任务依赖声明！
+                """.trimIndent()
+            )
+        }
+
+        // 打印合法的拓扑顺序（方便调试）
+        println("✅ 依赖图检测通过，拓扑顺序：$topoOrder")
     }
 
-    private suspend fun executeTask(
-        task: StartupTask, 
-        scope: CoroutineScope
-    ) {
-        val startTime = SystemClock.elapsedRealtime()
-        
-        try {
-            task.run(context)
-        } catch (e: Exception) {
-            println("❌ 任务 ${task.id} 执行失败: ${e.message}")
+    // 还原具体循环路径（DFS）
+    // 方便开发者定位问题
+    private fun findCyclePath(cycleNodes: Set<String>): String {
+        // 只在循环节点中做 DFS
+        val visited = mutableSetOf<String>()
+        val path = mutableListOf<String>()
+
+        fun dfs(nodeId: String): Boolean {
+            if (nodeId in path) {
+                // 找到环，截取环的部分
+                val cycleStart = path.indexOf(nodeId)
+                val cycle = path.subList(cycleStart, path.size) + nodeId
+                path.clear()
+                path.addAll(cycle)
+                return true
+            }
+            if (nodeId in visited) return false
+
+            path.add(nodeId)
+            visited.add(nodeId)
+
+            val task = taskMap[nodeId] ?: return false
+            for (depId in task.dependencies) {
+                if (depId in cycleNodes && dfs(depId)) {
+                    return true
+                }
+            }
+
+            path.removeLast()
+            return false
         }
-        
-        val cost = SystemClock.elapsedRealtime() - startTime
-        println("⏱ 任务 ${task.id} 耗时 ${cost}ms")
-        
-        // 任务完成，通知后续任务
-        onTaskFinished(task.id, scope)
+
+        cycleNodes.forEach { node ->
+            if (dfs(node)) return path.joinToString(" → ")
+        }
+
+        return cycleNodes.toString()
     }
 
-    private fun onTaskFinished(taskId: String, scope: CoroutineScope) {
-        // 遍历所有依赖此任务的后续任务
-        dependents[taskId]?.forEach { dependentId ->
-            val remaining = dependencyCount[dependentId]?.decrementAndGet()
-            
-            // 如果后续任务的所有依赖都完成了，立即启动它
-            if (remaining == 0) {
-                println("🚀 任务 $dependentId 的依赖全部满足，开始执行")
-                launchTask(dependentId, scope)
-            }
-        }
-    }
+    private suspend fun schedule() { /* 正常调度逻辑 */ }
 }
 ```
 ### IdleHandler
