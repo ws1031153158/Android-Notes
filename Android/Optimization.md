@@ -136,17 +136,40 @@ so 加载后自动触发，可能有大量初始化逻辑
 如果 Application 或 Activity 启动的过程太慢，导致系统的 BackgroundWindow 没有及时被替换，就会出现启动时白屏或黑屏的情况      
 可以设置预览图、自定义 Theme 等优化用户等待加载时的观感
 #### ContentProvider 优化
-很多 SDK 通过 ContentProvider 自动初始化，这些都会在 Application.onCreate 之前执行：  
+很多 SDK 通过 ContentProvider 自动初始化，AndroidManifest 合并后，这些都会在 Application.onCreate 之前执行，系统对每个 ContentProvider：  
+1.类加载：加载其所在 Dex/类  
+2.对象实例化：实例化 ContentProvider 对象  
+3.Binder 注册到 AMS：调用 ContentProvider.attachInfo()  
+4.调用 ContentProvider.onCreate()  
+
 1.adb shell dumpsys activity providers com.xxx 查看总数量。  
 2.Jetpack App Startup 合并 ContentProvider，所有 SDK 初始化合并到一个 ContentProvider 中  
-<img width="543" height="254" alt="image" src="https://github.com/user-attachments/assets/152ef4fc-466f-4ded-89d0-6556aedf82a7" />
+<img width="543" height="254" alt="image" src="https://github.com/user-attachments/assets/152ef4fc-466f-4ded-89d0-6556aedf82a7" />  
+
+只有 1 个 ContentProvider（InitializationProvider）：  
+1.类加载：1次  
+2.对象实例化：1次    
+3.Binder 注册：1次  
+4.在这1个CP的onCreate中，按序调用各 Initializer    
+
+但 SDK 的初始化代码该跑还是跑，节省的是ContentProvider 本身的创建开销、节省的是ContentProvider类加载开销、多次Binder IPC开销  
+此外，可以在 Initializer 中实现懒加载/异步（原生CP做不到）：  
+```
+// App Startup 支持异步初始化（这才是更大的价值）
+class HeavySDKInitializer : Initializer<Unit> {
+    override fun create(context: Context) {
+        // 可以在这里选择异步执行
+        CoroutineScope(Dispatchers.IO).launch {
+            HeavySDK.init(context) // 不阻塞 CP 的 onCreate
+        }
+    }
+    override fun dependencies() = emptyList<...>()
+}
+```
 
 #### MultiDex 优化
 异步加载 Secondary Dex：  
-1. 在主线程加载 Main Dex    
-2. 开启子线程异步加载 Secondary Dex  
-3. 若主线程需要 Secondary Dex 中的类，则等待加载完成  
-4. 加载完成后继续执行  
+在主线程加载 main.Dex(主 Dex，包含启动必需类) ,开启子线程异步加载 Secondary Dex,若主线程需要 Secondary Dex 中的类，则等待加载完成
 ## 热启动/温启动
 1.温启动：进程存在，但是 Activity 需要重新创建（Activity 被销毁：如退出应用后又重新启动应用。进程可能还在运行/系统因内存不足等原因将应用回收，然后用户又重新启动这个应用）   
 2.热启动：进程存在，Activity 在后台，只需要走 onStart，但是如果一些内存为响应内存整理事件（如 onTrimMemory()）而被完全清除，则需要为了响应热启动而重新创建相应的对象，热启动显示的屏幕上行为和冷启动场景相同。系统进程显示空白屏幕，直到应用完成 Activity 呈现  
@@ -321,7 +344,80 @@ class StartupScheduler(private val context: Context) {
 Class.forName() 只加载类本身以及静态变量的引用类，new 类实例可以额外加载类成员变量的引用类  
 确定哪些类需要提前加载，可以切换系统的 ClassLoader，在自定义 ClassLoader 里面每个类 load 时加一个 log，在项目中运行一次，这样就可以拿到所有 log，也就是需要异步加载的类  
 ### Dex 重排（Facebook ReDex / 字节码插桩）
-将启动相关类集中到同一 Dex 页，减少缺页中断
+将启动相关类集中到同一 Dex 页，减少缺页中断，主要影响 bindApplication 阶段。  
+#### 缺页中断
+Dex 文件存储在磁盘上，按类的编译顺序排列，为了节省物理内存，通常不会一次性将整个 DEX 文件读取到内存中，使用 mmap 系统调用将 DEX 文件映射到虚拟地址空间。  
+
+默认 Dex 布局（按编译顺序）：  
+[HomeActivity][UserModel][PaymentSDK][SettingActivity]  
+[NetworkUtils][DatabaseHelper][SplashActivity][......]  
+
+启动时需要的类：  
+SplashActivity、HomeActivity、NetworkUtils...  
+
+这些类分散在 Dex 文件的不同位置：    
+→ 当 CPU 访问 DEX 文件中尚未加载到物理内存中的类或代码时，会触发内核的缺页中断（Page Fault）  
+→ 内核此时会暂停应用程序，向磁盘（Flash）发起真正的 I/O 操作，将数据从磁盘加载到物理内存  
+→ 每次缺页中断约 1ms，几百次 = 几百ms 损耗  
+
+重拍后，按启动顺序：  
+[SplashActivity][HomeActivity][NetworkUtils][UserModel]  
+[...启动相关类集中在前几个内存页...]  
+[PaymentSDK][SettingActivity][...非启动类...]  
+#### 实现路径
+1.收集启动阶段类加载顺序：  
+```
+// 通过 Hook ClassLoader 记录启动期间加载的类
+class TraceClassLoader(parent: ClassLoader) : ClassLoader(parent) {
+    
+    private val loadedClasses = mutableListOf<String>()
+    
+    override fun loadClass(name: String, resolve: Boolean): Class<*> {
+        // 记录类加载顺序
+        if (isStartupPhase) {
+            loadedClasses.add(name)
+        }
+        return super.loadClass(name, resolve)
+    }
+    
+    fun getStartupClassOrder(): List<String> = loadedClasses
+}
+
+// 启动结束后，将顺序写入文件
+// startup_classes.txt
+// com.xxx.SplashActivity
+// com.xxx.HomeActivity  
+// com.xxx.network.OkHttpManager
+// ...
+```
+
+2.根据顺序重排 Dex（编译期）:  
+```
+// build.gradle 中接入 ReDex 或自定义插件
+android {
+    buildTypes {
+        release {
+            // 方案A：Facebook ReDex
+            // ReDex 读取 startup_classes.txt
+            // 重新排列 Dex 中类的顺序
+        }
+    }
+}
+
+// 方案B：自定义 Gradle Transform（字节码插桩阶段重排）
+class DexReorderTransform : Transform() {
+    override fun transform(invocation: TransformInvocation) {
+        // 1. 读取启动类顺序文件
+        val startupOrder = readStartupClassOrder()
+        
+        // 2. 将启动相关类排到 Dex 文件前面
+        reorderDexClasses(invocation, startupOrder)
+    }
+}
+```
+
+3.验证效果:  
+统计缺页中断：simpleperf stat -p [pid] --event major-faults,minor-faults
 ## 资源预加载
 ### 主题资源/字体/关键图片预加载
 ## CPU 升频
