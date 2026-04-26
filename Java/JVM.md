@@ -9,6 +9,252 @@ Java 内存模型：
 Java堆：内存最大区域，存放实例对象，Arrays 实例等，当无法再扩展时，将会抛出 OOM 异常。  
 方法区：JVM 具体实现，逻辑上可视为 Java 堆的一部分，存放类结构、类成员定义、静态成员等，含有一个运行时常量池，存放字符串、int 等，与 class 文件通过 classLoader 进行转换，方法区无法满足内存分配需求时，将抛出 OOM 异常。  
 此外，分为栈和堆主要是因为内存信息为两类，生命周期短，占用内存小的指令等，以及生命周期长，内存大，可以复用的实例对象等。  
+# 字节码
+Java 字节码是基于栈的指令集  
+```
+// Java 代码
+int result = add(1, 2);
+
+// 对应字节码
+ICONST_1      // 将常量 1 压入操作数栈
+ICONST_2      // 将常量 2 压入操作数栈
+INVOKESTATIC  // 调用 add 方法（消费栈顶2个值，压入返回值）
+ISTORE_1      // 将栈顶值存入局部变量1（result）
+
+// 操作数栈变化：
+// [] → [1] → [1,2] → [3] → []
+```
+## ASM
+ASM 采用访问者模式（Visitor Pattern）  
+
+ClassReader  → 读取字节码，驱动访问过程  
+ClassVisitor → 访问类的各个部分  
+MethodVisitor → 访问方法的字节码指令  
+ClassWriter  → 生成新的字节码  
+
+数据流向：  
+ClassReader → ClassVisitor链 → ClassWriter  
+              （可以插入多个Visitor，形成链）  
+具体场景举例：  
+```
+// 目标：给所有方法添加执行时间打印
+// 原方法：
+fun doSomething() {
+    Thread.sleep(100)
+}
+
+// 插桩后等价于：
+fun doSomething() {
+    val start = System.currentTimeMillis()
+    Thread.sleep(100)
+    println("doSomething 耗时: ${System.currentTimeMillis() - start}ms")
+}
+```
+
+读取和写入字节码:  
+```
+import org.objectweb.asm.*
+import org.objectweb.asm.Opcodes.*
+
+fun instrumentClass(classBytes: ByteArray): ByteArray {
+    // 1. ClassReader：解析字节码
+    val reader = ClassReader(classBytes)
+    
+    // 2. ClassWriter：生成新字节码
+    //    COMPUTE_FRAMES：自动计算栈帧（避免手动计算）
+    val writer = ClassWriter(reader, ClassWriter.COMPUTE_FRAMES)
+    
+    // 3. 中间插入我们的 ClassVisitor
+    val visitor = TimingClassVisitor(writer)
+    
+    // 4. 驱动访问过程
+    reader.accept(visitor, ClassReader.EXPAND_FRAMES)
+    
+    // 5. 返回新的字节码
+    return writer.toByteArray()
+}
+```
+
+ClassVisitor - 访问类:  
+```
+class TimingClassVisitor(cv: ClassVisitor) : ClassVisitor(ASM9, cv) {
+    
+    private lateinit var className: String
+    
+    // 访问类的基本信息（类名、父类、接口等）
+    override fun visit(
+        version: Int,      // 字节码版本
+        access: Int,       // 访问修饰符（public/private等）
+        name: String,      // 类名（内部格式：com/xxx/MyClass）
+        signature: String?,// 泛型签名
+        superName: String?,// 父类名
+        interfaces: Array<out String>? // 接口列表
+    ) {
+        className = name
+        super.visit(version, access, name, signature, superName, interfaces)
+    }
+    
+    // 访问每个方法，返回 MethodVisitor 来处理方法体
+    override fun visitMethod(
+        access: Int,        // 访问修饰符
+        name: String,       // 方法名
+        descriptor: String, // 方法描述符 (参数)返回值
+        signature: String?, // 泛型签名
+        exceptions: Array<out String>? // 异常列表
+    ): MethodVisitor {
+        
+        // 获取父类（ClassWriter）的 MethodVisitor
+        val mv = super.visitMethod(access, name, descriptor, signature, exceptions)
+        
+        // 跳过构造方法和抽象方法
+        if (name == "<init>" || name == "<clinit>") return mv
+        if (access and ACC_ABSTRACT != 0) return mv
+        if (access and ACC_NATIVE != 0) return mv
+        
+        // 用我们的 MethodVisitor 包装
+        return TimingMethodVisitor(mv, className, name)
+    }
+}
+```
+
+MethodVisitor - 访问方法体：  
+```
+class TimingMethodVisitor(
+    mv: MethodVisitor,
+    private val className: String,
+    private val methodName: String
+) : MethodVisitor(ASM9, mv) {
+    
+    // visitCode：方法体开始（在第一条指令前）
+    // 在这里插入"记录开始时间"的代码
+    override fun visitCode() {
+        super.visitCode() // 先调用父类，保持原有逻辑
+        
+        // 插入：long startTime = System.currentTimeMillis();
+        // 对应字节码：
+        mv.visitMethodInsn(
+            INVOKESTATIC,           // 静态方法调用
+            "java/lang/System",     // 类名
+            "currentTimeMillis",    // 方法名
+            "()J",                  // 描述符：无参数，返回long
+            false
+        )
+        // 此时栈顶：[startTime(long)]
+        
+        // 将 startTime 存入新的局部变量
+        // 注意：局部变量索引需要避开已有的参数
+        mv.visitVarInsn(LSTORE, getStartTimeVarIndex())
+        // 此时栈：[]，局部变量表：[..., startTime]
+    }
+    
+    // visitInsn：访问无操作数的指令（包括 RETURN 指令）
+    // 在 RETURN 前插入"打印耗时"的代码
+    override fun visitInsn(opcode: Int) {
+        // 检测所有 return 指令
+        if (opcode in listOf(RETURN, IRETURN, LRETURN, FRETURN, DRETURN, ARETURN)) {
+            insertTimingLog()
+        }
+        super.visitInsn(opcode)
+    }
+    
+    private fun insertTimingLog() {
+        // 插入：
+        // long cost = System.currentTimeMillis() - startTime;
+        // System.out.println(methodName + " 耗时: " + cost + "ms");
+        
+        // 获取当前时间
+        mv.visitMethodInsn(INVOKESTATIC, "java/lang/System",
+            "currentTimeMillis", "()J", false)
+        // 栈：[currentTime]
+        
+        // 加载 startTime
+        mv.visitVarInsn(LLOAD, getStartTimeVarIndex())
+        // 栈：[currentTime, startTime]
+        
+        // 相减
+        mv.visitInsn(LSUB)
+        // 栈：[cost]
+        
+        // 打印（简化：直接调用我们的工具类）
+        mv.visitLdcInsn("$className.$methodName")
+        // 栈：[cost, methodFullName]
+        
+        mv.visitMethodInsn(
+            INVOKESTATIC,
+            "com/monitor/TimingLogger", // 我们的工具类
+            "log",
+            "(JLjava/lang/String;)V",   // (long, String) -> void
+            false
+        )
+        // 栈：[]
+    }
+    
+    private fun getStartTimeVarIndex(): Int {
+        // 需要计算一个不冲突的局部变量索引
+        // 简化处理：使用一个较大的索引
+        // 实际应该通过分析方法参数数量来确定
+        return 20 // 简化示例
+    }
+}
+```
+
+工具类（被插桩代码调用):  
+```
+// 这个类在运行时被调用，不涉及反射
+object TimingLogger {
+    private const val THRESHOLD_MS = 16L // 超过16ms记录
+    
+    @JvmStatic
+    fun log(costMs: Long, methodName: String) {
+        if (costMs > THRESHOLD_MS) {
+            // 上报到监控系统
+            PerformanceMonitor.report(
+                type = "slow_method",
+                name = methodName,
+                costMs = costMs
+            )
+        }
+    }
+}
+```
+
+在 Gradle 插件中使用:  
+```
+// AGP 7.0+ 方式
+class TimingPlugin : Plugin<Project> {
+    override fun apply(project: Project) {
+        val androidComponents = project.extensions
+            .getByType(AndroidComponentsExtension::class.java)
+        
+        androidComponents.onVariants { variant ->
+            variant.instrumentation.transformClassesWith(
+                TimingClassVisitorFactory::class.java,
+                InstrumentationScope.ALL  // 包含第三方库
+            ) { }
+            
+            variant.instrumentation.setAsmFramesComputationMode(
+                FramesComputationMode.COMPUTE_FRAMES_FOR_INSTRUMENTED_METHODS
+            )
+        }
+    }
+}
+
+abstract class TimingClassVisitorFactory
+    : AsmClassVisitorFactory<InstrumentationParameters.None> {
+    
+    override fun createClassVisitor(
+        classContext: ClassContext,
+        nextClassVisitor: ClassVisitor
+    ): ClassVisitor {
+        return TimingClassVisitor(nextClassVisitor)
+    }
+    
+    override fun isInstrumentable(classData: ClassData): Boolean {
+        // 只插桩我们自己的代码
+        return classData.className.startsWith("com.xxx.")
+    }
+}
+```
 # 类加载
 ## 类加载机制
 加载过程为：加载 -> 链接（验证 -> 准备 -> 解析 -> 符号引用） -> 初始化 （-> 卸载）  。  
