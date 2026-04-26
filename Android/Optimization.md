@@ -2105,14 +2105,171 @@ build/outputs/mapping/release/seeds.txt
 // gradle.properties 开启 R8 Full Mode
 android.enableR8.fullMode=true
 
-// Full Mode 额外优化：
-// ├── 更激进的内联
-// ├── 接口默认方法内联
-// ├── 更多无用代码消除
-// └── 包体积额外减少 5%~10%
-
 // 注意：Full Mode 可能导致更多兼容性问题
 // 需要充分测试
+```
+
+与普通的区别：  
+```
+普通 R8：
+├── 保守地处理接口默认方法
+├── 不合并某些边界情况的类
+└── 保留更多"可能被反射访问"的代码
+
+Full Mode 额外优化：
+├── 更激进的接口内联
+├── 接口默认方法内联
+├── 更多类合并
+├── 包体积额外减少 5%~10%
+├── 删除更多"看起来没用"的代码
+└── 对反射的假设更激进（可能误删反射访问的代码）
+```
+
+##### 踩坑  
+Gson 反序列化失败：  
+```
+// 场景：用 Gson 解析服务端 JSON
+
+data class UserResponse(
+    @SerializedName("user_id")
+    val userId: String,
+    @SerializedName("user_name")
+    val userName: String,
+    val age: Int
+)
+
+// 问题：Full Mode 下，UserResponse 的字段可能被删除
+// 因为 R8 看不到这些字段被"直接"访问
+// Gson 通过反射访问字段，R8 静态分析不到
+
+// 症状：
+val user = gson.fromJson(json, UserResponse::class.java)
+println(user.userId)   // null！字段被删除了
+println(user.userName) // null！
+println(user.age)      // 0！
+
+// 解决方案一：keep 规则
+-keepclassmembers class com.xxx.model.** {
+    <fields>;
+}
+
+// 解决方案二：@Keep 注解（更精准）
+@Keep
+data class UserResponse(
+    @SerializedName("user_id")
+    val userId: String,
+    ...
+)
+
+// 解决方案三：换用 Moshi + Kotlin codegen（推荐）
+// Moshi 的 @JsonClass(generateAdapter = true)
+// 编译期生成适配器，不依赖反射
+// R8 可以正确分析，不需要 keep 规则
+@JsonClass(generateAdapter = true)
+data class UserResponse(
+    @Json(name = "user_id") val userId: String,
+    @Json(name = "user_name") val userName: String,
+    val age: Int
+)
+```
+
+接口默认方法被错误内联:  
+```
+// 场景：接口有默认方法实现
+
+interface Clickable {
+    fun click()
+    fun showOff() = println("I'm clickable!") // 默认实现
+}
+
+interface Focusable {
+    fun setFocus(b: Boolean) = println("I ${if (b) "got" else "lost"} focus.")
+    fun showOff() = println("I'm focusable!")
+}
+
+class Button : Clickable, Focusable {
+    override fun click() = println("I was clicked")
+    // 没有 override showOff()，存在歧义！
+}
+
+// Full Mode 可能错误处理这种多接口默认方法冲突
+// 症状：运行时 AbstractMethodError 或调用了错误的实现
+
+// 解决方案：明确 override
+class Button : Clickable, Focusable {
+    override fun click() = println("I was clicked")
+    override fun showOff() {
+        super<Clickable>.showOff() // 明确指定
+    }
+}
+```
+
+枚举被错误优化:  
+```
+// 场景：通过字符串获取枚举值
+
+enum class Direction { NORTH, SOUTH, EAST, WEST }
+
+// 代码中使用
+val dir = Direction.valueOf("NORTH") // 反射！
+
+// Full Mode 可能删除枚举的 values() 或 valueOf() 方法
+// 症状：NoSuchMethodError
+
+// 解决方案：keep 枚举
+-keepclassmembers enum * {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+
+// 或者避免使用 valueOf（用 when 替代）
+fun parseDirection(s: String): Direction = when(s) {
+    "NORTH" -> Direction.NORTH
+    "SOUTH" -> Direction.SOUTH
+    else -> Direction.NORTH
+}
+// 这样 R8 可以静态分析，不需要 keep
+```
+
+Retrofit 接口方法被删除:  
+```
+// 场景：Retrofit 通过动态代理调用接口方法
+
+interface ApiService {
+    @GET("/users/{id}")
+    suspend fun getUser(@Path("id") id: String): User
+
+    @POST("/login")
+    suspend fun login(@Body request: LoginRequest): LoginResponse
+}
+
+// Full Mode 可能认为这些接口方法没被直接调用
+// （实际是通过动态代理调用的）→ 删除方法！
+// 症状：运行时找不到方法，请求失败
+
+// 解决方案
+-keep,allowobfuscation interface com.xxx.api.ApiService
+-keepclassmembers,allowobfuscation interface * {
+    @retrofit2.http.* <methods>;
+}
+
+// 更好的方案：Retrofit 2.9+ 支持 R8 规则自动配置
+// 在 retrofit 的 jar 中已包含 consumer-rules.pro
+// 确保使用最新版本的 Retrofit
+```
+
+ServiceLoader 失效:  
+```
+// 场景：使用 Java SPI 机制（ServiceLoader）
+// META-INF/services/com.xxx.Plugin 文件中注册实现类
+
+// Full Mode 可能删除这些实现类（认为没被引用）
+// 症状：ServiceLoader.load() 返回空
+
+// 解决方案
+-keep class * implements com.xxx.Plugin { *; }
+
+// 或者用 @AutoService 注解 + keep 规则
 ```
 ### 无用代码删除
 ### 方法数优化
