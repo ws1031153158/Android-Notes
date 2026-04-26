@@ -87,6 +87,109 @@ fun calculate(): Int {
 1.函数类型参数本质是一个对象，而 inline 函数会将这个对象的代码展开铺平，消除其对象属性。   
 2.noinline 用于标记 inline 函数中的函数类型参数，被标记的函数类型参数不会被内联。   
 3.crossinline 是交叉内联，也是作用于内联函数的函数类型参数上，用途是强化函数类型参数的内联优化，使能被间接调用，并且被 crossinline 标记的 Lambda 中不能使用 return。
+### 风险
+1.代码膨胀  
+```
+// 被内联的函数被调用100次
+// → 函数体被复制100份
+// → Dex 文件变大
+// → 方法数可能增加（内联后的代码可能超过方法大小限制）
+
+// R8 的内联阈值控制：
+// 方法体 > N 条字节码指令 → 不内联
+// 但 Full Mode 下阈值更宽松 → 更多大方法被内联 → 包体积可能反而增大
+
+// 示例：
+fun formatDate(timestamp: Long): String {
+    val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+    return sdf.format(Date(timestamp))
+}
+
+// 被调用50次，Full Mode 可能全部内联
+// 50份 SimpleDateFormat 创建代码 → 代码膨胀
+```
+
+2.栈溢出  
+```
+// 内联消除了函数调用栈帧
+// 但如果内联层级过深，反而可能影响栈深度计算
+
+// 更常见的问题：
+// 内联后的方法体超过 Dex 方法大小限制（64KB字节码）
+// → 编译失败！
+
+// R8 Full Mode 遇到这种情况会：
+// ① 回退：不内联这个方法
+// ② 或者报错（极少数情况）
+```
+
+3.调试困难  
+```
+// 内联后，堆栈信息丢失
+
+// 内联前的崩溃堆栈：
+// at com.xxx.Utils.validateInput(Utils.kt:42)
+// at com.xxx.PaymentProcessor.process(PaymentProcessor.kt:18)
+
+// 内联后（validateInput 被内联进 process）：
+// at com.xxx.PaymentProcessor.process(PaymentProcessor.kt:18)
+// validateInput 消失了！不知道是哪行出的问题
+
+// 解决：保留行号信息
+// -keepattributes SourceFile,LineNumberTable
+// 即使内联，R8 也会尽量保留行号映射
+```
+
+4.接口内联破坏多态（Full Mode 特有）  
+```
+// 场景：接口只有一个实现，Full Mode 内联接口调用
+
+interface PaymentGateway {
+    fun charge(amount: Double): Boolean
+}
+
+class StripeGateway : PaymentGateway {
+    override fun charge(amount: Double): Boolean {
+        return stripeApi.charge(amount)
+    }
+}
+
+// 使用
+val gateway: PaymentGateway = StripeGateway()
+gateway.charge(100.0)
+
+// Full Mode 分析：PaymentGateway 只有一个实现 StripeGateway
+// → 内联接口调用，直接调用 StripeGateway.charge()
+// → 消除虚方法查找
+
+// 风险：如果运行时通过反射或动态加载了另一个实现
+// class AlipayGateway : PaymentGateway  ← 插件化动态加载
+// → 内联后的代码永远调用 Stripe，不会调用 Alipay！
+// → 功能错误，且极难排查
+
+// 解决：
+-keep interface com.xxx.PaymentGateway { *; }
+-keep class * implements com.xxx.PaymentGateway { *; }
+```
+
+5.Kotlin inline 函数与 R8 内联的叠加   
+```
+// Kotlin 的 inline 关键字：编译期内联（开发者控制）
+inline fun <T> measureTime(block: () -> T): T {
+    val start = System.currentTimeMillis()
+    val result = block()
+    println("耗时: ${System.currentTimeMillis() - start}ms")
+    return result
+}
+
+// R8 再次内联：对已经内联的代码再次优化
+// 双重内联可能导致：
+// ① 代码膨胀更严重
+// ② 局部变量名冲突（R8 会处理，但偶有bug）
+// ③ 异常处理逻辑错乱（try-catch 范围变化）
+
+// 建议：对复杂的 inline 函数，添加 keep 规则防止 R8 再次内联
+```
 ### 编译时常量
 变量的值固定不变，在编译时我们就可拿到这个变量的值。具体到代码中，就是变量使用 final 修饰，类型只能是字符串或基本类型，在声明时就赋值；在编译时，会直接拿这个变量值去替换变量名，是一种内联优化。
 ## 自定义
