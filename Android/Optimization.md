@@ -1674,7 +1674,460 @@ object ProcMonitor {
 ```
 缺点：  
 /proc文件读取有开销（远小于反射）  
+#### ASM 耗时监控插件
+项目结构:  
+```
+project/
+├── app/
+│   └── build.gradle
+├── plugin-timing/              ← 插件模块
+│   ├── build.gradle
+│   └── src/main/
+│       ├── kotlin/
+│       │   └── com/timing/
+│       │       ├── TimingPlugin.kt        ← 插件入口
+│       │       ├── TimingTransform.kt     ← AGP7以下
+│       │       ├── TimingClassVisitorFactory.kt ← AGP7+
+│       │       ├── TimingClassVisitor.kt  ← 类访问者
+│       │       └── TimingMethodVisitor.kt ← 方法访问者
+│       └── resources/
+│           └── META-INF/gradle-plugins/
+│               └── com.timing.plugin.properties
+├── timing-runtime/             ← 运行时库模块
+│   └── src/main/kotlin/
+│       └── com/timing/
+│           └── MethodTimer.kt  ← 被插桩代码调用
+└── settings.gradle
+```
 
+运行时库（被插桩代码调用，无反射）:  
+```
+// timing-runtime/src/main/kotlin/com/timing/MethodTimer.kt
+
+object MethodTimer {
+
+    // 使用 ThreadLocal 存储每个线程的调用栈
+    // 避免多线程竞争
+    private val callStack = ThreadLocal<ArrayDeque<Long>>()
+
+    // 阈值：超过此时间才记录
+    private const val THRESHOLD_MS = 16L
+
+    // 回调：外部注册，收到慢方法通知
+    var onSlowMethod: ((methodName: String, costMs: Long) -> Unit)? = null
+
+    // 方法开始时调用（由插桩代码调用）
+    @JvmStatic
+    fun onMethodEnter() {
+        val stack = callStack.get() ?: ArrayDeque<Long>().also {
+            callStack.set(it)
+        }
+        stack.addLast(System.currentTimeMillis())
+    }
+
+    // 方法结束时调用（由插桩代码调用）
+    @JvmStatic
+    fun onMethodExit(methodName: String) {
+        val stack = callStack.get() ?: return
+        val startTime = stack.removeLastOrNull() ?: return
+        val costMs = System.currentTimeMillis() - startTime
+
+        if (costMs >= THRESHOLD_MS) {
+            onSlowMethod?.invoke(methodName, costMs)
+            // 默认打印日志
+            android.util.Log.w("MethodTimer",
+                "慢方法: $methodName 耗时 ${costMs}ms")
+        }
+    }
+}
+```
+
+MethodVisitor（核心插桩逻辑）:  
+```
+// TimingMethodVisitor.kt
+import org.objectweb.asm.*
+import org.objectweb.asm.Opcodes.*
+
+class TimingMethodVisitor(
+    methodVisitor: MethodVisitor,
+    private val className: String,   // 如：com/xxx/MainActivity
+    private val methodName: String,  // 如：onCreate
+    private val descriptor: String   // 如：(Landroid/os/Bundle;)V
+) : MethodVisitor(ASM9, methodVisitor) {
+
+    // 方法的完整标识（用于日志显示）
+    private val fullMethodName = "$className.$methodName$descriptor"
+
+    // visitCode：方法体开始
+    // 在第一条指令前插入 onMethodEnter()
+    override fun visitCode() {
+        super.visitCode()
+
+        // 插入：MethodTimer.onMethodEnter()
+        mv.visitMethodInsn(
+            INVOKESTATIC,
+            "com/timing/MethodTimer",  // 类名（/分隔）
+            "onMethodEnter",           // 方法名
+            "()V",                     // 描述符：无参数，无返回值
+            false                      // 不是接口方法
+        )
+    }
+
+    // visitInsn：访问无操作数指令
+    // 在所有 RETURN 指令前插入 onMethodExit()
+    override fun visitInsn(opcode: Int) {
+        // 检测所有类型的 return 指令
+        val isReturn = opcode in setOf(
+            RETURN,   // void 方法返回
+            IRETURN,  // int/boolean/byte/char/short 返回
+            LRETURN,  // long 返回
+            FRETURN,  // float 返回
+            DRETURN,  // double 返回
+            ARETURN,  // 对象引用返回
+            ATHROW    // 抛出异常（也算方法结束）
+        )
+
+        if (isReturn) {
+            insertMethodExit()
+        }
+
+        super.visitInsn(opcode)
+    }
+
+    private fun insertMethodExit() {
+        // 插入：MethodTimer.onMethodExit("com/xxx/MainActivity.onCreate...")
+        
+        // 1. 将方法名字符串压栈
+        mv.visitLdcInsn(fullMethodName)
+        
+        // 2. 调用 onMethodExit(String)
+        mv.visitMethodInsn(
+            INVOKESTATIC,
+            "com/timing/MethodTimer",
+            "onMethodExit",
+            "(Ljava/lang/String;)V",  // 接收一个String参数
+            false
+        )
+    }
+
+    // 处理 try-catch：异常路径也需要插桩
+    // visitTryCatchBlock 不需要修改
+    // 但要确保 ATHROW 也被处理（上面已处理）
+}
+```
+
+ClassVisitor（过滤哪些类/方法需要插桩）:  
+```
+// TimingClassVisitor.kt
+import org.objectweb.asm.*
+import org.objectweb.asm.Opcodes.*
+
+class TimingClassVisitor(
+    cv: ClassVisitor,
+    private val config: TimingConfig
+) : ClassVisitor(ASM9, cv) {
+
+    private lateinit var currentClassName: String
+    private var isInterface = false
+
+    override fun visit(
+        version: Int, access: Int, name: String,
+        signature: String?, superName: String?,
+        interfaces: Array<out String>?
+    ) {
+        currentClassName = name
+        // 判断是否是接口（接口方法不插桩）
+        isInterface = (access and ACC_INTERFACE) != 0
+        super.visit(version, access, name, signature, superName, interfaces)
+    }
+
+    override fun visitMethod(
+        access: Int, name: String, descriptor: String,
+        signature: String?, exceptions: Array<out String>?
+    ): MethodVisitor {
+
+        val mv = super.visitMethod(access, name, descriptor, signature, exceptions)
+
+        // 过滤不需要插桩的方法
+        if (shouldSkip(access, name)) {
+            return mv  // 直接返回原始 mv，不插桩
+        }
+
+        // 返回插桩后的 MethodVisitor
+        return TimingMethodVisitor(mv, currentClassName, name, descriptor)
+    }
+
+    private fun shouldSkip(access: Int, methodName: String): Boolean {
+        // 跳过接口
+        if (isInterface) return true
+
+        // 跳过抽象方法（没有方法体）
+        if (access and ACC_ABSTRACT != 0) return true
+
+        // 跳过 native 方法
+        if (access and ACC_NATIVE != 0) return true
+
+        // 跳过构造方法（可选，根据需求）
+        if (methodName == "<init>" || methodName == "<clinit>") return true
+
+        // 跳过合成方法（编译器生成的）
+        if (access and ACC_SYNTHETIC != 0) return true
+
+        // 检查类名是否在白名单中
+        if (!config.shouldInstrument(currentClassName)) return true
+
+        return false
+    }
+}
+
+// 插桩配置
+data class TimingConfig(
+    // 需要插桩的包名前缀
+    val includePackages: List<String> = listOf("com/xxx/"),
+    // 排除的包名前缀
+    val excludePackages: List<String> = listOf(
+        "com/timing/",          // 排除监控库本身
+        "kotlin/",
+        "kotlinx/",
+        "androidx/",
+        "android/"
+    )
+) {
+    fun shouldInstrument(className: String): Boolean {
+        // 必须在包含列表中
+        val included = includePackages.any { className.startsWith(it) }
+        if (!included) return false
+
+        // 不能在排除列表中
+        val excluded = excludePackages.any { className.startsWith(it) }
+        return !excluded
+    }
+}
+```
+
+ClassVisitorFactory:  
+```
+// TimingClassVisitorFactory.kt
+import com.android.build.api.instrumentation.*
+import org.objectweb.asm.ClassVisitor
+
+abstract class TimingClassVisitorFactory
+    : AsmClassVisitorFactory<TimingParameters> {
+
+    override fun createClassVisitor(
+        classContext: ClassContext,
+        nextClassVisitor: ClassVisitor
+    ): ClassVisitor {
+        val config = TimingConfig(
+            includePackages = parameters.get().includePackages.get(),
+            excludePackages = parameters.get().excludePackages.get()
+        )
+        return TimingClassVisitor(nextClassVisitor, config)
+    }
+
+    override fun isInstrumentable(classData: ClassData): Boolean {
+        // 快速过滤，避免处理不需要插桩的类
+        // 这里的过滤比 ClassVisitor 中更早，性能更好
+        val className = classData.className.replace('.', '/')
+        return parameters.get().includePackages.get()
+            .any { className.startsWith(it) }
+    }
+}
+
+// 插件参数接口
+interface TimingParameters : InstrumentationParameters {
+    @get:Input
+    val includePackages: ListProperty<String>
+
+    @get:Input
+    val excludePackages: ListProperty<String>
+}
+```
+
+Gradle 插件入口:  
+```
+// TimingPlugin.kt
+import com.android.build.api.extension.AndroidComponentsExtension
+import org.gradle.api.Plugin
+import org.gradle.api.Project
+
+class TimingPlugin : Plugin<Project> {
+
+    override fun apply(project: Project) {
+        // 获取插件配置扩展
+        val extension = project.extensions.create(
+            "methodTiming",
+            TimingExtension::class.java
+        )
+
+        // 等 Android 插件配置完成后再处理
+        val androidComponents = project.extensions
+            .getByType(AndroidComponentsExtension::class.java)
+
+        androidComponents.onVariants { variant ->
+            // 只在 debug 或指定变体中插桩
+            if (!extension.enabledVariants.contains(variant.name)
+                && !extension.enableAll) {
+                return@onVariants
+            }
+
+            // 注册 ASM 转换
+            variant.instrumentation.transformClassesWith(
+                TimingClassVisitorFactory::class.java,
+                InstrumentationScope.PROJECT  // 只处理项目代码，不处理依赖
+            ) { params ->
+                // 配置参数
+                params.includePackages.set(extension.includePackages)
+                params.excludePackages.set(extension.excludePackages)
+            }
+
+            // 让 AGP 自动计算栈帧
+            variant.instrumentation.setAsmFramesComputationMode(
+                FramesComputationMode.COMPUTE_FRAMES_FOR_INSTRUMENTED_METHODS
+            )
+        }
+    }
+}
+
+// 插件配置 DSL
+open class TimingExtension {
+    var enableAll: Boolean = false
+    var enabledVariants: List<String> = listOf("debug")
+    var includePackages: List<String> = listOf()
+    var excludePackages: List<String> = listOf(
+        "kotlin/", "kotlinx/", "androidx/", "android/"
+    )
+    var thresholdMs: Long = 16L
+}
+```
+
+注册：  
+```
+# plugin-timing/src/main/resources/
+# META-INF/gradle-plugins/com.timing.plugin.properties
+
+implementation-class=com.timing.TimingPlugin
+```
+
+```
+// plugin-timing/build.gradle
+plugins {
+    id 'kotlin'
+    id 'java-gradle-plugin'
+}
+
+dependencies {
+    implementation gradleApi()
+    implementation 'com.android.tools.build:gradle:7.4.0'
+    implementation 'org.ow2.asm:asm:9.4'
+    implementation 'org.ow2.asm:asm-commons:9.4'
+    implementation 'org.ow2.asm:asm-util:9.4'  // 调试用
+}
+
+gradlePlugin {
+    plugins {
+        timingPlugin {
+            id = 'com.timing.plugin'
+            implementationClass = 'com.timing.TimingPlugin'
+        }
+    }
+}
+```
+
+使用:  
+```
+// settings.gradle
+includeBuild('plugin-timing')
+
+// app/build.gradle
+plugins {
+    id 'com.android.application'
+    id 'com.timing.plugin'  // 应用插件
+}
+
+// 配置插桩
+methodTiming {
+    enableAll = false
+    enabledVariants = ['debug', 'release']
+    includePackages = [
+        'com/xxx/app/',      // 只插桩自己的代码
+    ]
+    excludePackages = [
+        'com/xxx/app/generated/',  // 排除生成代码
+    ]
+    thresholdMs = 16  // 超过16ms才记录
+}
+
+dependencies {
+    implementation project(':timing-runtime')
+}
+```
+
+```
+// Application 中配置回调
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+
+        // 配置慢方法回调
+        MethodTimer.onSlowMethod = { methodName, costMs ->
+            // 上报到 APM 平台
+            APMReporter.reportSlowMethod(
+                method = methodName,
+                costMs = costMs,
+                thread = Thread.currentThread().name
+            )
+        }
+    }
+}
+```
+
+验证：  
+```
+// 插桩前的字节码（用 ASM Bytecode Viewer 查看）：
+// public onCreate(Landroid/os/Bundle;)V
+//   ALOAD 0
+//   ALOAD 1
+//   INVOKESPECIAL AppCompatActivity.onCreate
+//   RETURN
+
+// 插桩后的字节码：
+// public onCreate(Landroid/os/Bundle;)V
+//   INVOKESTATIC MethodTimer.onMethodEnter ()V   ← 插入
+//   ALOAD 0
+//   ALOAD 1
+//   INVOKESPECIAL AppCompatActivity.onCreate
+//   LDC "com/xxx/MainActivity.onCreate(Landroid/os/Bundle;)V"  ← 插入
+//   INVOKESTATIC MethodTimer.onMethodExit (Ljava/lang/String;)V ← 插入
+//   RETURN
+
+// 运行时输出：
+// W/MethodTimer: 慢方法: com/xxx/MainActivity.onCreate 耗时 234ms
+// W/MethodTimer: 慢方法: com/xxx/HomeFragment.onViewCreated 耗时 89ms
+```
+
+完整流程：  
+```
+编译期：
+源码(.kt/.java)
+    ↓ kotlinc/javac
+字节码(.class)
+    ↓ AGP调用 TimingClassVisitorFactory
+    ↓ ClassReader 读取每个 .class
+    ↓ TimingClassVisitor 判断是否插桩
+    ↓ TimingMethodVisitor 在方法入口/出口插入调用
+    ↓ ClassWriter 生成新 .class
+修改后的字节码(.class)
+    ↓ R8/D8
+.dex 文件（包含插桩代码）
+
+运行期：
+方法被调用
+    → MethodTimer.onMethodEnter() 记录开始时间
+    → 原始方法逻辑执行
+    → MethodTimer.onMethodExit("方法名") 计算耗时
+    → 超过阈值 → 触发回调 → 上报APM
+```
 ## 系统调用	
 ### 主线程SP读写（MMKV 替代）
 ### 文件 IO 异步化
