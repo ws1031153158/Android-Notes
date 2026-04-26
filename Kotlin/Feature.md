@@ -81,7 +81,64 @@ withContext 是挂起函数，做两件事：
 5.IO线程执行完毕  
 6.将"恢复"任务投递回主线程队列  
 7.主线程从队列取出"恢复"任务  
-8.继续执行 withContext 之后的代码，拿到返回值  
+8.继续执行 withContext 之后的代码，拿到返回值    
+
+一个IO线程可以处理多个协程，不是每个 withContext/launch 都新建线程。  
+线程池复用机制：  
+```
+// Dispatchers.IO 内部是一个线程池
+// 默认最大线程数：max(64, CPU核心数)
+
+// 场景：同时启动10个协程
+repeat(10) { index ->
+    launch(Dispatchers.IO) {
+        println("协程$index 开始: ${Thread.currentThread().name}")
+        delay(1000) // 挂起，释放线程
+        println("协程$index 结束: ${Thread.currentThread().name}")
+    }
+}
+
+// 输出可能是：
+// 协程0 开始: worker-1
+// 协程1 开始: worker-2
+// 协程2 开始: worker-3
+// ... 最多同时用到 min(10, 64) 个线程
+// delay期间，worker-1/2/3 被释放回线程池
+// 1000ms后恢复时，可能用的是 worker-5/6/7（任意空闲线程）
+// 协程0 结束: worker-5  ← 和开始时不同的线程！
+```
+
+嵌套：  
+```
+suspend fun nestedExample() {
+    // 假设当前在主线程
+
+    withContext(Dispatchers.IO) {           // ① 切到IO线程池，取一个worker
+        println(Thread.currentThread().name) // worker-1
+
+        withContext(Dispatchers.Main) {     // ② 切回主线程
+            println(Thread.currentThread().name) // main
+            // worker-1 被释放回线程池！
+
+            withContext(Dispatchers.IO) {   // ③ 再切到IO线程池
+                println(Thread.currentThread().name) // worker-1 或 worker-2
+                // 不一定是同一个worker！
+            }
+            // 切回主线程
+        }
+        // 切回IO线程（可能是新的worker）
+        println(Thread.currentThread().name) // worker-2（可能变了）
+    }
+    // 切回主线程
+}
+
+// IO(IO) → 只用一个IO线程（同调度器优化，不切换）
+// IO(MAIN(IO)) → 用了两个不同的IO线程（中间经过主线程，原IO线程被释放）
+
+// 自定义线程池大小
+val limitedIO = Dispatchers.IO.limitedParallelism(4) // 最多4个线程
+launch(limitedIO) { ... }
+```
 ## async
 async 也返回一个协程，不同点在于实现了 Deferred 接口，是一种延迟执行的方法，需要调用 .await（也是一个 suspend 方法）获取结果，一般用于同时开启多个任务，获取到所有返回结果再继续执行后面的任务。  
 默认启动，可以通过 start 手动开启，懒加载，在 launch 中传入CoroutineStart.LAZY，可以在 job.invokeOnCompletion 回调之后执行一些操作，正常和异常执行完毕都会走。  
@@ -246,30 +303,148 @@ suspend fun fetchUser(): User {
 // 编译器实际生成的代码（CPS变换）：
 // suspend 函数被编译为带 Continuation 参数的普通函数
 fun fetchUser(continuation: Continuation<User>): Any {
-    // Continuation 就是"回调"
-    // 包含：恢复执行所需的上下文 + 结果处理逻辑
+    // Continuation 就是"回调"，将传入的 continuation 包装为状态机
+    // 第一次调用时，continuation 是外部传入的
+    // 恢复时，continuation 是上次保存的，包含 恢复执行所需的上下文 + 结果处理逻辑
+    val sm = continuation as? FetchUserStateMachine
+        ?: FetchUserStateMachine(continuation)
     
-    when (continuation.label) {
+    when (sm.label) {
         0 -> {
-            continuation.label = 1
-            // 注册延迟回调，1000ms后恢复
-            delay(1000, continuation) // 挂起点
-            return COROUTINE_SUSPENDED // 告诉调用者：我挂起了
+            sm.label = 1
+            // 注册延迟回调，1000ms后恢复，传入状态机作为 continuation
+            val  result = delay(1000, continuation) // 挂起点
+
+            // delay 返回 COROUTINE_SUSPENDED
+            if (result == COROUTINE_SUSPENDED) {
+                return COROUTINE_SUSPENDED // 告诉调用方：挂起了
+            }
         }
         1 -> {
-            // 1000ms后从这里恢复
-            return User("张三")
+            // 检查是否有异常
+            val result = sm.result
+            if (result is Failure) throw result.exception
+
+            // delay 完成，继续执行 return User("张三")
+            val user = User("张三")
+            
+            // 通知外部调用者：我完成了，结果是 user
+            sm.completion.resume(user)
+            return user
         }
+    }
+}
+
+// 状态机类（保存协程的所有状态）
+class FetchUserStateMachine(
+    val completion: Continuation<User> // 外部的"回调"
+) : Continuation<Any?> {
+    
+    var label: Int = 0        // 当前状态
+    var result: Any? = null   // 上一步的结果
+    
+    // 当 delay 完成时，框架调用这个方法恢复协程
+    override fun resumeWith(result: Result<Any?>) {
+        this.result = result.getOrNull()
+        
+        // 重新调用 fetchUser，但这次 label=1
+        // 相当于从状态1继续执行
+        val outcome = fetchUser(this)
+        
+        if (outcome != COROUTINE_SUSPENDED) {
+            // 如果没有再次挂起，说明函数执行完了
+            completion.resumeWith(Result.success(outcome as User))
+        }
+    }
+    
+    override val context: CoroutineContext
+        get() = completion.context
+```
+
+delay底层实现：  
+```
+// delay 的简化实现
+suspend fun delay(timeMillis: Long): Unit {
+    if (timeMillis <= 0) return
+    
+    // suspendCancellableCoroutine 是最底层的挂起原语
+    return suspendCancellableCoroutine { continuation ->
+        // continuation 就是上面的 FetchUserStateMachine
+        
+        // 根据当前调度器，注册延迟回调
+        val dispatcher = continuation.context[ContinuationInterceptor]
+        
+        when (dispatcher) {
+            is HandlerContext -> {
+                // 主线程：用 Handler 延迟
+                val handler = dispatcher.handler // 主线程 Handler
+                val runnable = Runnable {
+                    // 1000ms 后执行这个 Runnable
+                    // 恢复协程
+                    continuation.resume(Unit)
+                    // 这会触发 FetchUserStateMachine.resumeWith()
+                    // 协程从 label=1 继续执行
+                }
+                handler.postDelayed(runnable, timeMillis)
+                
+                // 支持取消：协程取消时，移除这个 Runnable
+                continuation.invokeOnCancellation {
+                    handler.removeCallbacks(runnable)
+                }
+            }
+            
+            is ScheduledExecutorService -> {
+                // IO/Default 线程：用 ScheduledExecutor
+                val future = scheduledExecutor.schedule(
+                    { continuation.resume(Unit) },
+                    timeMillis,
+                    TimeUnit.MILLISECONDS
+                )
+                continuation.invokeOnCancellation {
+                    future.cancel(false)
+                }
+            }
+        }
+        
+        // 函数返回后：
+        // 1. continuation 已经被注册到定时器
+        // 2. 返回 COROUTINE_SUSPENDED
+        // 3. 当前线程被释放，去做其他事
     }
 }
 ```
 
-底层机制：  
-```
+完整流程：  
+调用 fetchUser(outerContinuation)：  
 
-```
+① 创建 FetchUserStateMachine(completion=outerContinuation)  
+   sm.label = 0  
 
-Tips：协程挂起后，执行的是当前线程消息队列/线程池中，下一个待执行的任务，代码没有任何顺序关系。  
+② 进入 when(0)：  
+   调用 delay(1000, sm)  
+   
+③ delay 内部：  
+   向 Handler 注册 postDelayed(sm.resume, 1000ms)  
+   返回 COROUTINE_SUSPENDED  
+   
+④ fetchUser 返回 COROUTINE_SUSPENDED  
+   当前线程释放！去做其他事  
+
+⑤ 1000ms 后：  
+   Handler 触发回调  
+   调用 sm.resumeWith(Result.success(Unit))  
+   
+⑥ sm.resumeWith 内部：  
+   sm.label 已经是 1  
+   重新调用 fetchUser(sm)  
+   
+⑦ 进入 when(1)：  
+   val user = User("张三")  
+   sm.completion.resume(user)  ← 通知外部调用者  
+   return user  
+   
+⑧ 外部调用者（outerContinuation）被恢复  
+   拿到 User("张三")  
 ## 作用域
 涉及到代码作用范围、协程 lifecycle 等    
 lifecycle：创建协程返回 job 对象，以此获取当前协程状态，有 isActive/isCompleted/isCancelled  
@@ -309,3 +484,55 @@ collect = 在水管末端接水
 2.Kotlin-JVM 中所谓的协程挂起，就是开启了一个子线程去执行任务（不会阻塞原先 Thread 的执行，要理解对于 CPU 来说，在宏观上每个线程得到执行的概率都是相等的），仅此而已，没有什么其他高深的东西。  
 3.Kotlin-JVM 中的协程最大的价值是写起来比 RxJava 的线程切换还要方便。几乎就是用阻塞的写法来完成非阻塞的任务。  
 4.对于 Java 来说，不管你用什么方法，只要你没有魔改 JVM，那么最终你代码里 start 几个线程，操作系统就会创建几个线程，是 1 比 1 的关系。
+## VS Thread
+线程：由操作系统调度，抢占式，开发者无法控制"下一个执行什么"  
+协程：由协程框架调度，协作式，挂起点明确，框架决定下一个任务  
+### Thread
+操作系统线程调度（抢占式）：  
+
+CPU时间片：  
+线程A: ████░░░░████░░░░████  
+线程B: ░░░░████░░░░████░░░░  
+线程C: ░░░░░░░░░░░░░░░░░░░░  ← 被阻塞，不参与调度  
+
+特点：  
+1.OS 随时可以中断任何线程（时间片用完）  
+2.线程切换由 OS 决定，开发者无法干预  
+4.线程间没有"代码顺序"关系  
+5.线程切换有上下文切换开销（寄存器保存/恢复，约1~10μs）  
+### Coroutine
+协程调度（协作式）：  
+
+主线程消息队列：  
+[协程A任务1] → [协程B任务1] → [协程A任务2] → [点击事件] → [协程B任务2]  
+      ↑               ↑               ↑
+  A执行到挂起点    B执行到挂起点    A恢复执行  
+
+特点：  
+1.协程主动让出执行权（在挂起点）  
+2.框架决定下一个执行哪个协程的哪段代码  
+3.挂起 ≠ 线程阻塞（线程可以去做其他事）  
+4.同一线程上的协程，某一时刻只有一个在执行  
+### 阻塞 vs 挂起
+```
+// 线程阻塞（Thread.sleep）
+thread {
+    println("线程开始")
+    Thread.sleep(1000) // 线程被阻塞！
+    // 这1秒内，这个线程什么都不能做
+    // 如果是主线程 → ANR！
+    println("线程结束")
+}
+
+// 协程挂起（delay）
+launch(Dispatchers.Main) {
+    println("协程开始")# 
+    delay(1000) // 协程挂起，但主线程没有阻塞！
+    // 这1秒内，主线程可以处理点击事件、刷新UI等
+    println("协程结束")
+}
+
+// 本质区别：
+// Thread.sleep → 系统调用，线程进入 WAITING 状态，让出CPU
+// delay → 向调度器注册回调，协程状态机保存，线程继续跑其他任务
+```
