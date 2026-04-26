@@ -639,10 +639,99 @@ collect = 在水管末端接水
 ### Thread
 操作系统线程调度（抢占式）：  
 
+开发者能做的：  
+1.创建线程、指定任务  
+2.设置线程优先级，影响调度概率  
+3.使用同步原语（等待、通知）  
+
+不能做的：  
+1.决定线程何时获得时间片  
+2.决定线程运行多久被中断   
+3.决定多个就绪线程的执行顺序  
+
 CPU时间片：  
 线程A: ████░░░░████░░░░████  
 线程B: ░░░░████░░░░████░░░░  
 线程C: ░░░░░░░░░░░░░░░░░░░░  ← 被阻塞，不参与调度  
+
+时间片分配算法 CFS：  
+```
+让每个线程获得"公平"的CPU时间
+
+关键概念：vruntime（虚拟运行时间）
+├── 每个线程维护一个 vruntime 值
+├── 线程运行时，vruntime 增加
+├── 线程等待时，vruntime 不增加
+└── 调度器总是选择 vruntime 最小的线程运行
+    → 运行时间少的线程优先获得CPU
+    → 实现"公平"
+
+CFS 调度过程：
+
+就绪队列（红黑树，按vruntime排序）：
+        [线程C vruntime=10]
+       /                   \
+[线程A vruntime=5]    [线程D vruntime=20]
+       \
+    [线程B vruntime=8]
+
+调度器：取 vruntime 最小的 → 线程A 获得CPU
+
+线程A 运行一个时间片（约4ms）：
+线程A.vruntime += 4ms × weight_factor
+
+重新插入红黑树：
+        [线程B vruntime=8]
+       /                   \
+[线程C vruntime=10]    [线程D vruntime=20]
+       /
+[线程A vruntime=9]  ← A的vruntime增加了，位置变了
+
+下次调度：取 vruntime 最小的 → 线程B
+```
+
+时间片大小计算：  
+```
+动态计算：
+时间片 = 调度周期 / 就绪线程数
+
+调度周期（sched_latency）= 6ms ~ 48ms（根据线程数调整）
+就绪线程数 = 4
+→ 每个线程时间片 = 12ms / 4 = 3ms
+
+线程优先级（nice值）影响 weight_factor：
+├── 高优先级线程：weight大，vruntime增长慢
+│   → 相同时间内，vruntime增加少
+│   → 更快轮到它执行
+└── 低优先级线程：weight小，vruntime增长快
+    → 更少机会获得CPU
+```
+
+调度触发：  
+```
+① 时间片用完
+   当前线程的 vruntime 超过下一个线程太多
+   → 抢占，切换到 vruntime 最小的线程
+
+② 线程主动让出
+   Thread.sleep() / wait() / IO等待
+   → 线程进入 SLEEPING/WAITING 状态
+   → 从就绪队列移除
+   → 立即调度其他线程
+
+③ 高优先级线程就绪
+   某个等待的高优先级线程被唤醒
+   → 如果它的 vruntime 比当前线程小很多
+   → 抢占当前线程
+
+④ 系统调用返回
+   线程从内核态返回用户态时检查是否需要调度
+```
+
+Tips：  
+1.同一线程内部，代码按顺序执行  
+2.不同线程之间，执行顺序有OS决定  
+3.thread.start 之后，主线程立即继续，子线程可能在此之前或之后  
 
 特点：  
 1.OS 随时可以中断任何线程（时间片用完）  
@@ -662,6 +751,99 @@ CPU时间片：
 2.框架决定下一个执行哪个协程的哪段代码  
 3.挂起 ≠ 线程阻塞（线程可以去做其他事）  
 4.同一线程上的协程，某一时刻只有一个在执行  
+
+协程框架：  
+```
+// 协程框架 = 调度器（Dispatcher）+ 协程上下文
+
+// 主线程调度器（HandlerContext）
+// 本质：Android 主线程的 Handler + MessageQueue
+
+// 当你写：
+launch(Dispatchers.Main) {
+    println("任务1")
+    delay(1000)        // 挂起点
+    println("任务2")
+}
+
+// 框架做的事：
+// 1. 将"执行到delay之前的代码"包装成 Runnable
+//    → 投递到主线程 MessageQueue
+// 2. 主线程从 MessageQueue 取出，执行到 delay
+// 3. delay 注册1000ms后的回调，返回 SUSPENDED
+// 4. 主线程继续取 MessageQueue 下一个任务（可能是其他协程/点击事件）
+// 5. 1000ms后，delay回调触发
+//    → 将"从delay之后继续执行"包装成 Runnable
+//    → 投递到主线程 MessageQueue
+// 6. 主线程取出，执行 println("任务2")
+```
+
+挂起恢复：  
+```
+// 完整场景演示
+fun main() {
+    val scope = CoroutineScope(Dispatchers.Main)
+
+    // 协程A
+    scope.launch {
+        println("A1")
+        delay(1000)    // A 挂起
+        println("A2")  // 1000ms后恢复
+    }
+
+    // 协程B
+    scope.launch {
+        println("B1")
+        delay(500)     // B 挂起
+        println("B2")  // 500ms后恢复
+    }
+
+    println("主线程其他代码")
+}
+
+// 主线程 MessageQueue 执行过程：
+//
+// 时刻 0ms：
+// 队列：[启动A的任务] [启动B的任务] [主线程其他代码]
+//
+// 取出"启动A"：
+//   执行 println("A1")
+//   执行 delay(1000)
+//     → 向Handler注册：1000ms后投递"恢复A"
+//     → 返回 SUSPENDED
+//   A挂起，当前任务结束
+//
+// 队列：[启动B的任务] [主线程其他代码]
+//
+// 取出"启动B"：
+//   执行 println("B1")
+//   执行 delay(500)
+//     → 向Handler注册：500ms后投递"恢复B"
+//     → 返回 SUSPENDED
+//   B挂起
+//
+// 队列：[主线程其他代码]
+//
+// 取出"主线程其他代码"：
+//   执行 println("主线程其他代码")
+//
+// 队列：[] （空，主线程空闲等待）
+//
+// 时刻 500ms：
+// Handler触发，投递"恢复B"
+// 队列：[恢复B]
+//
+// 取出"恢复B"：
+//   从 delay 之后继续执行
+//   执行 println("B2")
+//   B结束
+//
+// 时刻 1000ms：
+// Handler触发，投递"恢复A"
+// 取出"恢复A"：
+//   执行 println("A2")
+//   A结束
+```
 ### 阻塞 vs 挂起
 ```
 // 线程阻塞（Thread.sleep）
