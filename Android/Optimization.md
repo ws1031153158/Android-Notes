@@ -854,6 +854,16 @@ class HomeActivity : AppCompatActivity() {
 # 包体积优化	
 ## 代码裁剪	
 ### ProGuard/R8 混淆
+R8 = 编译器 + 混淆器 + 优化器 的三合一工具  
+AGP 3.4+ 默认替代 ProGuard  
+ProGuard：源码 → javac → .class → ProGuard(混淆/裁剪) → dex工具 → .dex  
+R8：源码 → kotlinc/javac → .class → R8(混淆/裁剪/优化/dex，一步完成，速度更快) → .dex
+
+R8 核心能力：
+1.Tree Shaking（摇树，删除无用代码）  
+2. Minification（混淆，缩短名称）  
+3. Optimization（优化，改写字节码）  
+4. Dexing（生成Dex文件）  
 ### 无用代码删除
 ### 方法数优化
 ## 资源优化	
