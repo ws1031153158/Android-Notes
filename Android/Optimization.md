@@ -204,6 +204,10 @@ class BaselineProfileGenerator {
 // 安装时系统会对这些类/方法做 AOT 编译
 // 首次启动即享受 AOT 性能
 ```
+##### BaseProfile
+问题：  
+App 安装后首次启动 → JIT 解释执行 → 慢
+多次启动后 → 系统后台 dex2oat → AOT编译 → 快
 ## 热启动/温启动
 1.温启动：进程存在，但是 Activity 需要重新创建（Activity 被销毁：如退出应用后又重新启动应用。进程可能还在运行/系统因内存不足等原因将应用回收，然后用户又重新启动这个应用）   
 2.热启动：进程存在，Activity 在后台，只需要走 onStart，但是如果一些内存为响应内存整理事件（如 onTrimMemory()）而被完全清除，则需要为了响应热启动而重新创建相应的对象，热启动显示的屏幕上行为和冷启动场景相同。系统进程显示空白屏幕，直到应用完成 Activity 呈现  
@@ -860,10 +864,152 @@ ProGuard：源码 → javac → .class → ProGuard(混淆/裁剪) → dex工具
 R8：源码 → kotlinc/javac → .class → R8(混淆/裁剪/优化/dex，一步完成，速度更快) → .dex
 
 R8 核心能力：
-1.Tree Shaking（摇树，删除无用代码）  
-2. Minification（混淆，缩短名称）  
-3. Optimization（优化，改写字节码）  
-4. Dexing（生成Dex文件）  
+1.Tree Shaking（摇树，删除无用代码）
+```
+// 原始代码
+class Utils {
+    fun usedMethod() { println("被使用") }
+    fun unusedMethod() { println("没人调用我") } // 会被删除
+}
+
+class DeadClass { // 整个类没被引用，会被删除
+    fun method() {}
+}
+
+// R8 分析调用链：
+// 入口点（Activity/Application）→ 追踪所有可达代码
+// 不可达的代码 → 直接删除
+
+// 配置入口点（keep规则）
+// proguard-rules.pro
+-keep class com.xxx.MainActivity { *; }
+-keep class * extends android.app.Application { *; }
+```
+
+2. Minification（混淆，缩短名称）
+```
+// 混淆前
+package com.example.payment
+
+class PaymentProcessor {
+    private var userBalance: Double = 0.0
+
+    fun processPayment(amount: Double): Boolean {
+        return userBalance >= amount
+    }
+}
+
+// 混淆后（R8生成）
+package com.example.payment
+
+class a {           // PaymentProcessor → a
+    private var a: Double = 0.0  // userBalance → a
+
+    fun a(a: Double): Boolean {  // processPayment → a
+        return this.a >= a
+    }
+}
+
+// 效果：
+// 类名/方法名/字段名 → 短名称
+// 包名压缩
+// 字符串不混淆（默认）
+// 减少包体积 + 增加反编译难度
+```
+
+3. Optimization（优化，改写字节码）
+```
+// ① 内联（Inlining）
+// 优化前
+fun add(a: Int, b: Int) = a + b
+fun calculate() = add(1, 2) // 函数调用有开销
+
+// 优化后（R8内联）
+fun calculate() = 3 // 直接计算结果，消除函数调用
+
+// ② 常量折叠
+val MAX_SIZE = 100
+val DOUBLE_SIZE = MAX_SIZE * 2 // R8直接替换为 200
+
+// ③ 无效代码消除
+fun example(debug: Boolean = false) {
+    if (debug) {
+        // BuildConfig.DEBUG = false 时
+        // R8 直接删除整个if块
+        Log.d("TAG", "debug info")
+    }
+}
+
+// ④ 类合并（Class Merging）
+// 只有一个子类的抽象类 → 合并为一个类
+// 减少类数量，降低方法数
+
+// ⑤ 参数移除
+// 未使用的方法参数 → 直接删除
+fun process(data: String, unused: Int) { // unused被删除
+    println(data)
+}
+```
+
+4. Dexing（生成Dex文件）
+#### 需要保留内容
+1.参数：
+-keepattributes *Annotation*(注释)/SourceFile/LineNumberTable(行号，看堆栈需要)/Signature(泛型信息，序列化需要)  
+2.Framework 组件：
+-keep class * extends android.app/android.content/ ... ...
+3.数据模型(JSON序列化用到反射):
+-keep class com.xxx.model.** { *; }(特定包下所有类)
+-keep @com.xxx.annotation.KeepModel class * { *; }(带注解的类,更精准)
+4.三方SDK(按需)：
+如Retrofit、Gson、OkHttp
+5.反射相关（运行时通过反射访问的类）：
+-keep class com.xxx.plugin.** { *; }
+6.Native方法（JNI调用）：
+-keepclasseswithmembernames class * {native <methods>;}
+7.枚举（Enum有特殊方法）：
+-keepclassmembers enum * {public static **[] values(); public static ** valueOf(java.lang.String);}
+8.Parcelable：
+-keepclassmembers class * implements android.os.Parcelable {public static final android.os.Parcelable$Creator CREATOR;}
+#### 问题排查
+```
+1. 生成 mapping.txt（混淆映射表）
+build/outputs/mapping/release/mapping.txt
+
+2. 还原崩溃堆栈
+混淆后的堆栈：
+at a.a.a(Unknown Source:3)
+使用 retrace 还原：
+java -jar retrace.jar mapping.txt stacktrace.txt
+
+3. 查看哪些代码被删除
+build.gradle 添加：
+android {
+    buildTypes {
+        release {
+            // 生成使用情况报告
+        }
+    }
+}
+查看 build/outputs/mapping/release/usage.txt
+里面列出了所有被删除的类和方法
+
+4. 查看种子文件（被保留的类）
+build/outputs/mapping/release/seeds.txt
+```
+#### Full Mode
+```
+// gradle.properties 开启 R8 Full Mode
+android.enableR8.fullMode=true
+
+// Full Mode 额外优化：
+// ├── 更激进的内联
+// ├── 接口默认方法内联
+// ├── 更多无用代码消除
+// └── 包体积额外减少 5%~10%
+
+// 注意：Full Mode 可能导致更多兼容性问题
+// 需要充分测试
+```
 ### 无用代码删除
 ### 方法数优化
 ## 资源优化	
