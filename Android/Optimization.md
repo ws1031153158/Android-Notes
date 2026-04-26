@@ -1619,8 +1619,49 @@ ProGuard：源码 → javac → .class → ProGuard(混淆/裁剪) → dex工具
 R8：源码 → kotlinc/javac → .class → R8(混淆/裁剪/优化/dex，一步完成，速度更快) → .dex
 
 R8 核心能力：
-1.Tree Shaking（摇树，删除无用代码）
+1.Tree Shaking（摇树，删除无用代码）  
+本质是可达性分析，和 JVM GC 的标记算法思路相同，从"根节点"出发，遍历所有可达代码：  
+R8 的根节点（不会被删除的起点）：  
+
+① AndroidManifest.xml 中声明的组件  
+   <activity android:name=".MainActivity"/>  
+   <service android:name=".MyService"/>  
+   └── 这些类及其生命周期方法是根节点  
+
+② -keep 规则声明的类/方法  
+   -keep class com.xxx.MainActivity { *; }  
+
+③ 反射可能访问的类（R8无法静态分析反射）  
+   Class.forName("com.xxx.SomeClass") → R8 看不懂  
+   → 需要手动 -keep，否则可能被误删！  
+
+④ 注解处理器生成的代码入口  
+
+⑤ JNI 调用的 Java 方法  
+   JNIEXPORT void Java_com_xxx_NativeLib_init  
+   → 对应的 Java native 方法是根节点    
 ```
+
+标记：
+白色 = 未访问（初始状态，可能被删除）  
+灰色 = 已发现但未完全处理  
+黑色 = 已完全处理（确定保留）
+
+① 所有根节点标记为灰色，加入工作队列  
+
+② 取出灰色节点，分析它引用的所有代码：  
+   ├── 调用的方法 → 标记为灰色  
+   ├── 访问的字段 → 标记为灰色  
+   ├── 继承的父类 → 标记为灰色  
+   ├── 实现的接口 → 标记为灰色  
+   └── 注解 → 标记为灰色  
+
+③ 当前节点标记为黑色（处理完毕）  
+
+④ 重复②③直到工作队列为空   
+
+⑤ 所有仍为白色的节点 → 删除  
+
 // 原始代码
 class Utils {
     fun usedMethod() { println("被使用") }
@@ -1641,7 +1682,7 @@ class DeadClass { // 整个类没被引用，会被删除
 -keep class * extends android.app.Application { *; }
 ```
 
-2. Minification（混淆，缩短名称）
+2. Minification（混淆，缩短名称）  
 ```
 // 混淆前
 package com.example.payment
@@ -1664,15 +1705,84 @@ class a {           // PaymentProcessor → a
         return this.a >= a
     }
 }
-
-// 效果：
-// 类名/方法名/字段名 → 短名称
-// 包名压缩
-// 字符串不混淆（默认）
-// 减少包体积 + 增加反编译难度
 ```
 
-3. Optimization（优化，改写字节码）
+类名/方法名/字段名 → 短名称：  
+类名按字母顺序的最短名称，如：  
+第1个类 → a  
+第2个类 → b  
+...  
+第26个类 → z  
+第27个类 → aa  
+第28个类 → ab  
+...  
+方法名、字段名同理，但在各自的命名空间内独立计数  
+
+包名压缩：  
+```
+// 混淆前
+com.example.app.feature.payment.PaymentProcessor
+com.example.app.feature.payment.CardValidator
+com.example.app.feature.user.UserManager
+com.example.app.feature.user.ProfileHelper
+
+// 混淆后（包名压缩）
+a.a.a.a  // PaymentProcessor
+a.a.a.b  // CardValidator
+a.a.b.a  // UserManager
+a.a.b.b  // ProfileHelper
+
+// 或者更激进（repackageclasses）
+// 所有类放到同一个包下
+-repackageclasses 'x'
+// 结果：
+x.a  // PaymentProcessor
+x.b  // CardValidator
+x.c  // UserManager
+x.d  // ProfileHelper
+```
+
+字符串不混淆:  
+```
+// 默认情况：字符串不混淆
+class ApiConfig {
+    val baseUrl = "https://api.example.com"        // 明文！
+    val secretKey = "sk_live_abcd1234"             // 危险！
+    val sqlQuery = "SELECT * FROM users"           // 暴露表结构！
+}
+
+// 反编译后完全可见：
+// const-string v0, "https://api.example.com"
+// const-string v1, "sk_live_abcd1234"
+
+// 解决方案一：字符串加密（R8 StringEncryption，需要付费版）
+
+// 解决方案二：手动加密敏感字符串
+object SecureConfig {
+    // 运行时解密，不在字节码中明文存储
+    val secretKey: String
+        get() = decrypt("加密后的密文")
+
+    private fun decrypt(cipher: String): String {
+        // 解密逻辑
+        return XORDecrypt(cipher, BuildConfig.DECRYPT_KEY)
+    }
+}
+
+// 解决方案三：NDK存储（放到so中）
+// 敏感字符串在C++层，更难逆向
+
+// 解决方案四：服务端下发
+// 不在客户端存储敏感信息
+```
+
+减少包体积:  
+类名从平均20字符 → 1~2字符,包路径从30字符 → 1字符  
+删除无用代码  
+内联（减少方法数）  
+减少 Dex 文件头开销  
+
+3. Optimization（优化，改写字节码）  
 ```
 // ① 内联（Inlining）
 // 优化前
@@ -1706,7 +1816,7 @@ fun process(data: String, unused: Int) { // unused被删除
 }
 ```
 
-4. Dexing（生成Dex文件）
+4. Dexing（生成Dex文件）  
 #### 需要保留内容
 1.参数：
 -keepattributes *Annotation*(注释)/SourceFile/LineNumberTable(行号，看堆栈需要)/Signature(泛型信息，序列化需要)  
@@ -1717,7 +1827,7 @@ fun process(data: String, unused: Int) { // unused被删除
 -keep @com.xxx.annotation.KeepModel class * { *; }(带注解的类,更精准)
 4.三方SDK(按需)：
 如Retrofit、Gson、OkHttp
-5.反射相关（运行时通过反射访问的类）：
+5.反射相关（运行时通过反射访问的类，R8看不懂字符串，会认为不可达而删除）：
 -keep class com.xxx.plugin.** { *; }
 6.Native方法（JNI调用）：
 -keepclasseswithmembernames class * {native <methods>;}
