@@ -206,8 +206,200 @@ class BaselineProfileGenerator {
 ```
 ##### BaseProfile
 问题：  
-App 安装后首次启动 → JIT 解释执行 → 慢
-多次启动后 → 系统后台 dex2oat → AOT编译 → 快
+App 安装后首次启动 → JIT 解释执行 → 慢  
+多次启动后 → 系统后台 dex2oat → AOT编译 → 快  
+
+优化：  
+告诉系统："这些类/方法是启动关键路径，安装时就AOT编译"  
+效果：首次启动即享受AOT性能，启动速度提升 20%~40%  
+
+接入：  
+```
+// add dependencies
+// app/build.gradle
+dependencies {
+    implementation "androidx.profileinstaller:profileinstaller:1.3.1"
+
+    // 测试模块依赖
+    "baselineProfile"(project(":baselineprofile"))
+}
+
+// baselineprofile/build.gradle（新建模块）
+plugins {
+    id("com.android.test")
+    id("androidx.baselineprofile")
+}
+
+android {
+    targetProjectPath = ":app"
+    experimentalProperties["android.experimental.self-instrumenting"] = true
+}
+
+dependencies {
+    implementation("androidx.test.ext:junit:1.1.5")
+    implementation("androidx.test.uiautomator:uiautomator:2.2.0")
+    implementation("androidx.benchmark:benchmark-macro-junit4:1.2.3")
+}
+```
+
+```
+//Profile Generator
+// baselineprofile/src/main/.../BaselineProfileGenerator.kt
+@RunWith(AndroidJUnit4::class)
+@LargeTest
+class BaselineProfileGenerator {
+
+    @get:Rule
+    val rule = BaselineProfileRule()
+
+    @Test
+    fun generate() = rule.collect(
+        packageName = "com.xxx.app",
+        // 包含哪些交互路径
+        includeInStartupProfile = true
+    ) {
+        // ================================
+        // 描述用户启动路径
+        // 框架会记录这些路径中加载的所有类/方法
+        // ================================
+
+        // 1. 冷启动
+        pressHome()
+        startActivityAndWait() // 等待首帧渲染完成
+
+        // 2. 首页关键交互
+        device.waitForIdle()
+
+        // 滑动首页列表（触发列表渲染相关代码）
+        device.findObject(By.res("com.xxx.app:id/home_recycler"))
+            ?.let { recycler ->
+                recycler.scroll(Direction.DOWN, 3f)
+                recycler.scroll(Direction.UP, 3f)
+            }
+
+        // 3. 点击进入详情页（高频路径）
+        device.findObject(By.res("com.xxx.app:id/item_card"))
+            ?.click()
+        device.waitForIdle()
+
+        // 4. 返回
+        device.pressBack()
+        device.waitForIdle()
+
+        // 5. 搜索路径
+        device.findObject(By.res("com.xxx.app:id/search_btn"))
+            ?.click()
+        device.waitForIdle()
+    }
+}
+```
+
+```
+# 连接真机（需要 rooted 设备或 Google Pixel）
+# 或使用 Android Studio 的 Managed Device
+
+# 运行生成器
+./gradlew :app:generateReleaseBaselineProfile
+
+# 生成的文件位置：
+# app/src/{$Flavor}Release/baseline-prof.txt
+
+# 文件内容示例：
+# HSPLcom/xxx/MainActivity;-><init>()V
+# HSPLcom/xxx/MainActivity;->onCreate(Landroid/os/Bundle;)V
+# HSPLcom/xxx/network/OkHttpManager;->init(Landroid/content/Context;)V
+# ...
+# H = Hot（热方法，AOT编译）
+# S = Startup（启动时加载）
+# P = Post-startup（启动后加载）
+# L = 类加载
+```
+
+```
+// check effect
+// macrobenchmark/src/.../StartupBenchmark.kt
+@RunWith(AndroidJUnit4::class)
+class StartupBenchmark {
+
+    @get:Rule
+    val benchmarkRule = MacrobenchmarkRule()
+
+    // 没有 Baseline Profile 的冷启动
+    @Test
+    fun coldStartWithoutProfile() = benchmarkRule.measureRepeated(
+        packageName = "com.xxx.app",
+        metrics = listOf(
+            StartupTimingMetric(),
+            FrameTimingMetric()
+        ),
+        iterations = 10,
+        startupMode = StartupMode.COLD,
+        setupBlock = {
+            // 清除 Profile 编译
+            device.executeShellCommand(
+                "cmd package compile -m interpret-only -f com.xxx.app"
+            )
+        }
+    ) {
+        pressHome()
+        startActivityAndWait()
+    }
+
+    // 有 Baseline Profile 的冷启动
+    @Test
+    fun coldStartWithProfile() = benchmarkRule.measureRepeated(
+        packageName = "com.xxx.app",
+        metrics = listOf(StartupTimingMetric()),
+        iterations = 10,
+        startupMode = StartupMode.COLD,
+        setupBlock = {
+            // 应用 Profile 编译
+            device.executeShellCommand(
+                "cmd package compile -m speed-profile -f com.xxx.app"
+            )
+        }
+    ) {
+        pressHome()
+        startActivityAndWait()
+    }
+}
+
+// 典型结果：
+// 无Profile：timeToInitialDisplay P50 = 850ms
+// 有Profile：timeToInitialDisplay P50 = 580ms
+// 提升约 32% ✅
+```
+
+```
+# CI Integration
+# .git/workflows/baseline-profile.yml
+name: Generate Baseline Profile
+
+on:
+  # 每次发版前生成
+  push:
+    branches: [ release/* ]
+
+jobs:
+  generate-profile:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+
+      - name: Generate Baseline Profile
+        run: |
+          ./gradlew :baselineprofile:generateBaselineProfile \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+
+      - name: Commit Profile
+        run: |
+          git add app/src/main/baseline-prof.txt
+          git commit -m "Update Baseline Profile"
+          git push
+```
 ## 热启动/温启动
 1.温启动：进程存在，但是 Activity 需要重新创建（Activity 被销毁：如退出应用后又重新启动应用。进程可能还在运行/系统因内存不足等原因将应用回收，然后用户又重新启动这个应用）   
 2.热启动：进程存在，Activity 在后台，只需要走 onStart，但是如果一些内存为响应内存整理事件（如 onTrimMemory()）而被完全清除，则需要为了响应热启动而重新创建相应的对象，热启动显示的屏幕上行为和冷启动场景相同。系统进程显示空白屏幕，直到应用完成 Activity 呈现  
