@@ -1816,7 +1816,107 @@ fun process(data: String, unused: Int) { // unused被删除
 }
 ```
 
-4. Dexing（生成Dex文件）  
+4. Dexing（生成Dex文件）
+```
+.class 文件（JVM字节码）和 .dex 文件的区别：
+
+.class 文件：
+├── 每个类一个文件
+├── 常量池：每个类独立
+├── 指令集：JVM字节码（基于栈）
+└── 设计目标：JVM运行
+
+.dex 文件：
+├── 多个类合并到一个文件
+├── 常量池：所有类共享（去重！）
+├── 指令集：Dalvik字节码（基于寄存器）
+└── 设计目标：移动设备，内存紧张
+```
+
+Dexing 步骤：  
+```
+R8 Dexing 步骤：
+
+① 字节码转换：JVM字节码 → Dalvik字节码
+   
+   // JVM字节码（基于栈）：
+   ILOAD_1    // 将局部变量1压栈
+   ILOAD_2    // 将局部变量2压栈
+   IADD       // 弹出两个值，相加，结果压栈
+   IRETURN    // 弹出栈顶，返回
+   
+   // Dalvik字节码（基于寄存器）：
+   add-int v0, v1, v2  // v0 = v1 + v2，直接操作寄存器
+   return v0
+
+② 共享常量池构建
+   // 多个类中相同的字符串/类型引用 → 合并为一份
+   // 例：100个类都引用 "java/lang/String"
+   // .class：100个常量池各存一份
+   // .dex：共享常量池只存一份 → 大幅减小体积
+
+③ 方法数检查与分包
+   // 单个 Dex 文件方法数上限：65536（0xFFFF）
+   // 超过则分为 classes.dex + classes2.dex + ...
+   
+   // R8 的分包策略：
+   // 将启动相关类优先放入 classes.dex（主Dex）
+   // 其余类放入 secondary Dex
+
+④ 优化 Dex 布局
+   // 按类的调用关系排列，提高局部性
+   // 相关联的类放在相邻位置
+   // 减少运行时的缺页中断
+```
+#### 内联
+```
+R8 决定是否内联的判断条件：
+
+✅ 可以内联：
+├── 方法体足够小（字节码指令数 < 阈值，约5~10条）
+├── 方法只被调用一次
+├── 非虚方法（private/final/static）
+└── 内联后不会导致类循环依赖
+
+❌ 不能内联：
+├── 方法体太大（内联会导致调用方膨胀）
+├── 递归方法
+├── 虚方法（可能有多个实现）
+├── 被 -keep 保留的方法
+└── 包含异常处理的复杂方法
+```
+#### 类合并
+```
+// 场景：只有一个实现的抽象类/接口
+
+// 合并前
+abstract class BaseRepository {
+    abstract fun fetchData(): String
+    fun logFetch() { println("fetching...") }
+}
+
+class UserRepository : BaseRepository() {
+    // UserRepository 是 BaseRepository 的唯一子类
+    override fun fetchData(): String = "user data"
+}
+
+// 使用方
+val repo: BaseRepository = UserRepository()
+repo.fetchData()
+
+// R8 类合并后：
+// BaseRepository 被合并进 UserRepository
+// 消除了一层继承
+class UserRepository {  // 不再继承 BaseRepository
+    fun fetchData(): String = "user data"
+    fun logFetch() { println("fetching...") }  // 直接合并进来
+}
+
+// 效果：
+// ├── 减少一个类（减少方法数）
+// ├── 消除虚方法调用（变为直接调用）
+// └── 为进一步内联创造条件
+```
 #### 需要保留内容
 1.参数：
 -keepattributes *Annotation*(注释)/SourceFile/LineNumberTable(行号，看堆栈需要)/Signature(泛型信息，序列化需要)  
