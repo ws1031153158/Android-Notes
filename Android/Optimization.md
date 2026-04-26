@@ -422,25 +422,155 @@ abstract class StartupTask {
     open val priority: Int = 0
     abstract suspend fun run(context: Context)
 }
+```
+
+```
+// 任务状态定义
+sealed class TaskState {
+    object Pending   : TaskState()
+    object Running   : TaskState()
+    data class Success(val costMs: Long) : TaskState()
+    data class Failed(val error: Throwable) : TaskState()
+}
+
+data class StartupProgress(
+    val taskId: String,
+    val state: TaskState,
+    val totalTasks: Int,
+    val completedTasks: Int
+) {
+    val progressPercent: Int
+        get() = (completedTasks * 100f / totalTasks).toInt()
+}
+```
 
 调度器，拓扑排序检测循环依赖：  
 ```
 class StartupScheduler(private val context: Context) {
 
     private val taskMap = mutableMapOf<String, StartupTask>()
+    private val taskStates = mutableMapOf<String, MutableStateFlow<TaskState>>()
+
+    // 对外暴露的进度流
+    private val _progressFlow = MutableSharedFlow<StartupProgress>(
+        replay = 0,
+        extraBufferCapacity = 64
+    )
+    val progressFlow: SharedFlow<StartupProgress> = _progressFlow
+
+    // 所有任务完成的信号
+    private val _completedFlow = MutableStateFlow(false)
+    val completedFlow: StateFlow<Boolean> = _completedFlow
 
     fun register(vararg tasks: StartupTask): StartupScheduler {
-        tasks.forEach { taskMap[it.id] = it }
+        tasks.forEach { task ->
+            taskMap[task.id] = task
+            taskStates[task.id] = MutableStateFlow(TaskState.Pending)
+        }
         return this
     }
 
     // 注册完成后，start() 前先做检测
-    suspend fun start() {
+    suspend fun start() = coroutineScope {
         // 第一步：检测所有问题，有问题直接抛异常
         validateGraph()
-        
-        // 第二步：正常调度
-        schedule()
+
+        val totalTasks = taskMap.size
+        val completedCount = AtomicInteger(0)
+        val dependencyCount = buildDependencyCount()
+        val dependents = buildDependents()
+
+        // 找出所有无依赖的任务，立即启动
+        val readyTasks = dependencyCount
+            .filter { it.value.get() == 0 }
+            .keys
+
+        readyTasks.forEach { taskId ->
+            launchTask(
+                taskId, this,
+                dependencyCount, dependents,
+                totalTasks, completedCount
+            ) 
+        }
+
+       //正常调度
+       schedule()
+    }
+
+    private fun launchTask(
+        taskId: String,
+        scope: CoroutineScope,
+        dependencyCount: Map<String, AtomicInteger>,
+        dependents: Map<String, List<String>>,
+        totalTasks: Int,
+        completedCount: AtomicInteger
+    ) {
+        val task = taskMap[taskId] ?: return
+        val stateFlow = taskStates[taskId] ?: return
+
+        val dispatcher = if (task.runOnMainThread)
+            Dispatchers.Main else Dispatchers.IO
+
+        scope.launch(dispatcher) {
+            // 更新状态：Running
+            stateFlow.value = TaskState.Running
+            _progressFlow.emit(
+                StartupProgress(
+                    taskId = taskId,
+                    state = TaskState.Running,
+                    totalTasks = totalTasks,
+                    completedTasks = completedCount.get()
+                )
+            )
+
+            val startTime = SystemClock.elapsedRealtime()
+
+            try {
+                task.run(context)
+
+                val cost = SystemClock.elapsedRealtime() - startTime
+                val completed = completedCount.incrementAndGet()
+
+                // 更新状态：Success
+                val successState = TaskState.Success(cost)
+                stateFlow.value = successState
+                _progressFlow.emit(
+                    StartupProgress(
+                        taskId = taskId,
+                        state = successState,
+                        totalTasks = totalTasks,
+                        completedTasks = completed
+                    )
+                )
+
+                // 检查是否全部完成
+                if (completed == totalTasks) {
+                    _completedFlow.value = true
+                }
+
+                // 通知后续任务
+                dependents[taskId]?.forEach { depId ->
+                    val remaining = dependencyCount[depId]?.decrementAndGet()
+                    if (remaining == 0) {
+                        launchTask(
+                            depId, scope,
+                            dependencyCount, dependents,
+                            totalTasks, completedCount
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                stateFlow.value = TaskState.Failed(e)
+                _progressFlow.emit(
+                    StartupProgress(
+                        taskId = taskId,
+                        state = TaskState.Failed(e),
+                        totalTasks = totalTasks,
+                        completedTasks = completedCount.get()
+                    )
+                )
+            }
+        }
     }
 
     // 图合法性全量检测
@@ -450,6 +580,30 @@ class StartupScheduler(private val context: Context) {
         
         // 检测2：是否存在循环依赖（Kahn拓扑排序）
         checkCyclicDependencies()
+    }
+
+    // 获取特定任务的状态流
+    fun getTaskState(taskId: String): StateFlow<TaskState>? =
+        taskStates[taskId]
+
+    // 等待特定任务完成（挂起）
+    suspend fun waitForTask(taskId: String) {
+        taskStates[taskId]
+            ?.first { it is TaskState.Success || it is TaskState.Failed }
+    }
+
+    private fun buildDependencyCount() = taskMap.mapValues { (id, task) ->
+        AtomicInteger(task.dependencies.size)
+    }.toMutableMap()
+
+    private fun buildDependents(): Map<String, List<String>> {
+        val map = mutableMapOf<String, MutableList<String>>()
+        taskMap.values.forEach { task ->
+            task.dependencies.forEach { depId ->
+                map.getOrPut(depId) { mutableListOf() }.add(task.id)
+            }
+        }
+        return map
     }
 
     // 检测1：缺失依赖
@@ -581,7 +735,67 @@ class StartupScheduler(private val context: Context) {
         return cycleNodes.toString()
     }
 
-    private suspend fun schedule() { /* 正常调度逻辑 */ }
+    private suspend fun schedule(){...}
+}
+```
+
+```
+//Consume
+class SplashActivity : AppCompatActivity() {
+
+    private val scheduler = FlowStartupScheduler(this)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_splash)
+
+        // 注册任务
+        scheduler.register(
+            ConfigTask(),
+            NetworkTask(),
+            DatabaseTask(),
+            UserInfoTask(),
+            HomeDataTask()
+        )
+
+        // 观察启动进度，更新骨架屏
+        lifecycleScope.launch {
+            scheduler.progressFlow
+                .flowOn(Dispatchers.Main)
+                .collect { progress ->
+                    // 更新进度条
+                    progressBar.progress = progress.progressPercent
+
+                    // 更新任务状态文字（调试模式）
+                    if (BuildConfig.DEBUG) {
+                        statusText.text =
+                            "${progress.taskId}: ${progress.state}"
+                    }
+                }
+        }
+
+        // 观察全部完成信号
+        lifecycleScope.launch {
+            scheduler.completedFlow
+                .filter { it } // 等 true
+                .first()       // 只取第一次
+            // 所有任务完成，跳转主页
+            navigateToMain()
+        }
+
+        // 启动调度
+        lifecycleScope.launch {
+            scheduler.start()
+        }
+    }
+
+    // 也可以等待特定任务完成后做某件事
+    // 比如：网络初始化完成后才发请求
+    private suspend fun waitNetworkThenFetch() {
+        scheduler.waitForTask("network")
+        // network 完成，可以发网络请求了
+        fetchSplashAd()
+    }
 }
 ```
 ### IdleHandler
@@ -726,6 +940,202 @@ fun releaseBuffer(buffer: ByteArray) {
 1.异步任务过多会抢占首帧渲染的 CPU 资源，需要平衡  
 2.Splash 展示期间用户已经在等待，不是"免费"时间，也不要刻意放入过多耗时任务  
 3.关注 P90/P99，低端机用户体验同样重要
+## 低端机优化
+### 特殊性
+低端机特征：  
+1.CPU：4核以下，主频 1.4GHz 以下  
+2.RAM：2GB 以下，可用内存可能只有 500MB  
+3.存储：eMMC 5.0（随机IO比高端机慢 3~5倍）  
+4.GPU：Mali-400 等老旧GPU  
+5.Android版本：可能是 Android 8/9  
+
+导致的问题：  
+1.类加载慢（CPU弱）  
+2.IO慢（存储慢）→ Dex加载、资源加载更慢  
+3.内存紧张 → 频繁GC → 启动期间GC更多  
+4.系统本身负载高 → Binder响应更慢  
+5.多进程竞争资源更激烈  
+### 优化
+#### IO 优化
+```
+// 低端机 IO 比高端机慢 3~5 倍
+// 所有 IO 操作必须异步
+
+class LowEndIOOptimizer {
+
+    // 策略：预判设备等级，动态调整策略
+    private val isLowEnd = isLowEndDevice()
+
+    fun optimizeStartup(context: Context) {
+        if (isLowEnd) {
+            // 低端机：更激进的异步策略
+            // 减少启动时的IO操作数量
+            applyLowEndStrategy(context)
+        } else {
+            applyNormalStrategy(context)
+        }
+    }
+
+    private fun applyLowEndStrategy(context: Context) {
+        // 1. 减少启动时读取的SP数量
+        //    只预加载最关键的1个SP，其他延迟
+        context.getSharedPreferences("critical_only", MODE_PRIVATE)
+
+        // 2. 数据库WAL模式（减少IO等待）
+        //    WAL允许读写并发(修改写入独立的.wal文件，内存共享，在此读最新数据，写仅追加到文件末尾，n对1，系统会定期写会.db，清空.wal)，减少锁等待
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, "app.db")
+            .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+            .build()
+
+        // 3. 图片只加载低分辨率版本
+        ImageLoader.setLowEndConfig(
+            maxBitmapSize = 720,  // 高端机可能是1080
+            memCacheSize = 32     // MB，高端机可能是128MB
+        )
+    }
+
+    private fun isLowEndDevice(): Boolean {
+        val am = context.getSystemService(ActivityManager::class.java)
+        val memInfo = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(memInfo)
+        return am.isLowRamDevice ||
+               memInfo.totalMem < 3L * 1024 * 1024 * 1024 || // 3GB
+               Runtime.getRuntime().availableProcessors() <= 4
+    }
+}
+```
+#### 内存优化
+```
+class LowEndMemoryStrategy {
+
+    fun apply(application: Application) {
+        application.registerComponentCallbacks(object : ComponentCallbacks2 {
+            override fun onTrimMemory(level: Int) {
+                when (level) {
+                    // 低端机更激进地释放内存
+                    ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> {
+                        // 系统内存不足，立即释放非必要缓存
+                        ImageLoader.clearMemoryCache()
+                        clearNonCriticalCache()
+                    }
+                    ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> {
+                        // 极度紧张，释放所有能释放的
+                        releaseAllCache()
+                    }
+                }
+            }
+            override fun onConfigurationChanged(config: Configuration) {}
+            override fun onLowMemory() {
+                releaseAllCache()
+            }
+        })
+    }
+
+    // 低端机启动时，主动控制对象创建
+    fun controlObjectCreation() {
+        // 减少启动期间的大对象创建
+        // 避免触发GC
+
+        // 例：图片缓存大小按内存动态调整
+        val maxMemory = Runtime.getRuntime().maxMemory()
+        val cacheSize = when {
+            maxMemory < 64 * 1024 * 1024  -> 8   // <64MB heap → 8MB cache
+            maxMemory < 128 * 1024 * 1024 -> 16  // <128MB heap → 16MB cache
+            else                          -> 32  // 正常 → 32MB cache
+        }
+        ImageLoader.setMemCacheSize(cacheSize)
+    }
+}
+```
+#### 任务裁剪
+```
+// 低端机启动时，砍掉非必要任务
+class AdaptiveStartupScheduler(context: Context) 
+    : FlowStartupScheduler(context) {
+
+    private val isLowEnd = isLowEndDevice()
+
+    override fun register(vararg tasks: StartupTask): FlowStartupScheduler {
+        val filteredTasks = tasks.filter { task ->
+            if (isLowEnd) {
+                // 低端机过滤掉非关键任务
+                task.priority >= PRIORITY_CRITICAL
+            } else {
+                true
+            }
+        }
+        return super.register(*filteredTasks.toTypedArray())
+    }
+
+    companion object {
+        const val PRIORITY_CRITICAL = 10  // 必须执行
+        const val PRIORITY_NORMAL   = 5   // 正常执行
+        const val PRIORITY_LOW      = 1   // 低端机跳过
+    }
+}
+
+// 任务声明时标注优先级
+class AnalyticsTask : StartupTask() {
+    override val id = "analytics"
+    override val priority = AdaptiveStartupScheduler.PRIORITY_LOW
+    // 低端机启动时跳过统计SDK初始化
+    // 延迟到用户真正操作时再初始化
+}
+```
+#### 首屏简化
+```
+// 低端机展示简化版首屏
+class AdaptiveHomeActivity : AppCompatActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        if (isLowEndDevice()) {
+            // 低端机：加载简化布局
+            // 减少View数量，降低measure/layout耗时
+            setContentView(R.layout.activity_home_simple)
+            loadSimpleContent()
+        } else {
+            // 高端机：完整布局
+            setContentView(R.layout.activity_home_full)
+            loadFullContent()
+        }
+    }
+
+    private fun loadSimpleContent() {
+        // 低端机首屏策略：
+        // 1. 不加载Banner（动画耗GPU）
+        // 2. 列表只加载前5条（减少首屏数据量）
+        // 3. 图片延迟加载（先展示占位图）
+        // 4. 不播放任何动画
+    }
+}
+```
+#### 进程优先级
+```
+# 低端机内存紧张，App进程容易被LMK杀死
+# 启动期间提升进程优先级
+
+# 代码层面：
+# 启动时设置前台Service，提升进程优先级
+# 避免启动过程中被系统杀死
+
+// 启动期间临时提升优先级
+class StartupForegroundService : Service() {
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 创建通知，提升为前台Service
+        val notification = buildStartupNotification()
+        startForeground(NOTIFICATION_ID, notification)
+
+        // 启动完成后停止
+        lifecycleScope.launch {
+            waitForStartupComplete()
+            stopSelf()
+        }
+        return START_NOT_STICKY
+    }
+}
+```
 # 内存优化	
 ## 内存泄漏
 程序中已动态分配的堆内存由于某种原因未被释放或无法释放，造成系统内存浪费，导致程序运行速度减慢甚至系统崩溃等严重后果。  
@@ -940,6 +1350,7 @@ class BinderCallLimiter {
 }
 ```
 ### 跨进程调用耗时监控
+动态代理：  
 ```
 // 自定义 Binder 耗时监控
 // 通过动态代理拦截 Binder 调用
@@ -953,7 +1364,7 @@ object BinderMonitor {
         val getServiceMethod = serviceManagerClass
             .getDeclaredMethod("getService", String::class.java)
         
-        // 使用反射替换为代理实现（需要适配各Android版本）
+        // 使用反射替换为代理实现
         // 记录每次 Binder 调用的耗时和调用栈
     }
     
@@ -970,6 +1381,158 @@ object BinderMonitor {
         return records
             .sortedByDescending { it.costMs }
             .take(20) // 上报最慢的20次 Binder 调用
+    }
+}
+```
+
+缺点：  
+兼容性：  
+需要适配各Android版本。  
+反射的性能开销：  
+1.Class.forName()：类查找，有缓存，第一次慢  
+2.getDeclaredMethod()：方法查找，每次都有开销  
+3.method.invoke()：比直接调用慢 10~50 倍  
+4.在启动关键路径上用反射 = 拆东墙补西墙  
+
+编译期插桩：  
+```
+// 原理：编译时通过 ASM 字节码插桩
+// 在每个 Binder 调用前后自动插入监控代码
+// 运行时没有反射，只是普通方法调用
+
+// Gradle Transform 插件
+class BinderMonitorTransform : Transform() {
+
+    override fun transform(invocation: TransformInvocation) {
+        invocation.inputs.forEach { input ->
+            input.jarInputs.forEach { jarInput ->
+                // 扫描所有字节码
+                processJar(jarInput, invocation.outputProvider)
+            }
+        }
+    }
+
+    private fun processClass(classBytes: ByteArray): ByteArray {
+        val reader = ClassReader(classBytes)
+        val writer = ClassWriter(reader, ClassWriter.COMPUTE_FRAMES)
+
+        // ASM 访问者模式，拦截方法调用
+        val visitor = BinderCallVisitor(writer)
+        reader.accept(visitor, ClassReader.EXPAND_FRAMES)
+
+        return writer.toByteArray()
+    }
+}
+
+// ASM 方法访问者：拦截 Binder 调用
+class BinderCallVisitor(cv: ClassVisitor) : ClassVisitor(ASM9, cv) {
+
+    override fun visitMethod(...): MethodVisitor {
+        val mv = super.visitMethod(...)
+        return BinderMethodVisitor(mv)
+    }
+}
+
+class BinderMethodVisitor(mv: MethodVisitor) 
+    : MethodVisitor(ASM9, mv) {
+
+    override fun visitMethodInsn(
+        opcode: Int, owner: String,
+        name: String, descriptor: String, isInterface: Boolean
+    ) {
+        // 检测是否是 Binder 的 transact 调用
+        if (owner == "android/os/IBinder" && name == "transact") {
+            // 在 transact 调用前插入：记录开始时间
+            mv.visitMethodInsn(
+                INVOKESTATIC,
+                "com/xxx/monitor/BinderMonitor",
+                "onBinderCallBegin",
+                "()V", false
+            )
+
+            // 原始 transact 调用
+            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+
+            // 在 transact 调用后插入：记录结束时间
+            mv.visitMethodInsn(
+                INVOKESTATIC,
+                "com/xxx/monitor/BinderMonitor",
+                "onBinderCallEnd",
+                "()V", false
+            )
+        } else {
+            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+        }
+    }
+}
+
+// 运行时监控类（被插桩代码调用）
+// 没有任何反射！只是普通静态方法
+object BinderMonitor {
+    private val startTimeThreadLocal = ThreadLocal<Long>()
+
+    @JvmStatic
+    fun onBinderCallBegin() {
+        startTimeThreadLocal.set(SystemClock.elapsedRealtime())
+    }
+
+    @JvmStatic
+    fun onBinderCallEnd() {
+        val cost = SystemClock.elapsedRealtime() -
+                   (startTimeThreadLocal.get() ?: return)
+        if (cost > THRESHOLD_MS) {
+            recordSlowBinder(cost, getCallStack())
+        }
+    }
+
+    private const val THRESHOLD_MS = 10L
+}
+```
+
+缺点：  
+实现难度大  
+
+/proc 文件监控：  
+```
+// 线上最佳方案：不用反射，不用插桩
+// 利用系统的 Binder 统计接口
+
+object BinderStats {
+
+    // 读取系统提供的 Binder 统计信息
+    // /proc/[pid]/wchan 显示线程等待原因
+    // binder_transaction_pending = 在等待Binder
+    fun getBinderWaitInfo(): String {
+        return try {
+            File("/proc/${Process.myPid()}/wchan").readText()
+        } catch (e: Exception) { "" }
+    }
+
+    // 结合 Choreographer 监控
+    // 在每帧回调中检查主线程是否在等待 Binder
+    fun startMonitor() {
+        Choreographer.getInstance().postFrameCallback(object :
+            Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                checkMainThreadBinder()
+                Choreographer.getInstance().postFrameCallback(this)
+            }
+        })
+    }
+
+    private fun checkMainThreadBinder() {
+        // 通过 /proc/[pid]/task/[mainThreadTid]/wchan
+        // 判断主线程是否在等待 Binder
+        val mainTid = Looper.getMainLooper().thread.id
+        val wchan = try {
+            File("/proc/${Process.myPid()}/task/$mainTid/wchan").readText()
+        } catch (e: Exception) { return }
+
+        if (wchan.contains("binder")) {
+            // 主线程正在等待 Binder！记录调用栈
+            val stackTrace = Looper.getMainLooper().thread.stackTrace
+            reportBinderBlock(stackTrace)
+        }
     }
 }
 ```
