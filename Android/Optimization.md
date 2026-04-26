@@ -1489,7 +1489,100 @@ object BinderMonitor {
 }
 ```
 
+方法签名解析：  
+```
+// 你想拦截所有 Binder.transact() 调用
+// 但 transact 的签名是：
+// transact(int code, Parcel data, Parcel reply, int flags): Boolean
+
+// ASM 中方法签名是描述符格式：
+// (ILandroid/os/Parcel;Landroid/os/Parcel;I)Z
+// I = int, L...;= 对象类型, Z = boolean
+
+// 难点：你需要精确匹配描述符
+// 否则：
+// ① 匹配错误的方法（误插桩）
+// ② 遗漏目标方法（漏插桩）
+
+class BinderCallVisitor(mv: MethodVisitor) : MethodVisitor(ASM9, mv) {
+    override fun visitMethodInsn(
+        opcode: Int,
+        owner: String,    // 类名：android/os/IBinder
+        name: String,     // 方法名：transact
+        descriptor: String, // 描述符：(ILandroid/os/Parcel;Landroid/os/Parcel;I)Z
+        isInterface: Boolean
+    ) {
+        // 必须同时匹配 owner + name + descriptor
+        // 只匹配 name 会误伤其他类的同名方法！
+        if (owner == "android/os/IBinder"
+            && name == "transact"
+            && descriptor == "(ILandroid/os/Parcel;Landroid/os/Parcel;I)Z"
+        ) {
+            // 插桩
+        } else {
+            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+        }
+    }
+}
+```
+
+栈帧计算：  
+```
+插桩前的字节码栈帧：
+... [arg1] [arg2] → 调用 transact → [result]
+
+插桩后需要：
+... [arg1] [arg2] → 调用 monitorBegin → [arg1] [arg2] → 调用 transact → [result] → 调用 monitorEnd → [result]
+
+问题：
+① 插入 monitorBegin 时，栈上已有参数
+   如果 monitorBegin 消费了栈上的值 → 参数丢失！
+   需要在调用前 DUP（复制）参数
+
+② 不同方法的参数数量不同
+   transact 有4个参数，其他方法可能有1个或10个
+   DUP 逻辑需要适配不同参数数量
+
+③ COMPUTE_FRAMES 标志
+   ClassWriter(ClassWriter.COMPUTE_FRAMES) 让 ASM 自动计算
+   但有时会出错，需要手动处理
+
+// 正确的插桩方式（不破坏栈）
+override fun visitMethodInsn(...) {
+    if (isTargetMethod(owner, name, descriptor)) {
+        
+        // 方案：在调用前后插入，不修改参数
+        // 调用前：记录开始时间（不需要参数）
+        mv.visitMethodInsn(
+            INVOKESTATIC,
+            "com/monitor/BinderMonitor",
+            "begin",
+            "()V",  // 无参数，不影响栈
+            false
+        )
+        
+        // 原始调用（参数还在栈上，不受影响）
+        super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+        
+        // 调用后：记录结束时间（result还在栈上）
+        // 注意：result 是 boolean，在栈顶
+        // 如果 monitorEnd 需要 result，要先 DUP
+        mv.visitInsn(DUP) // 复制栈顶的 boolean result
+        mv.visitMethodInsn(
+            INVOKESTATIC,
+            "com/monitor/BinderMonitor",
+            "end",
+            "(Z)V",  // 接收 boolean，消费复制的那个
+            false
+        )
+        // 原始 result 还在栈上，正常返回给调用方
+    } else {
+        super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+    }
+}
+```
 缺点：  
+需要兼容AGP版本  
 实现难度大  
 
 /proc 文件监控：  
@@ -1536,6 +1629,52 @@ object BinderStats {
     }
 }
 ```
+
+```
+// /proc 文件是内核虚拟文件系统（procfs）
+// 读取它不是真正的磁盘IO！
+// 而是：内核直接从内存数据结构生成内容
+
+// 实测开销：
+// /proc/[pid]/wchan 读取：约 0.05ms ~ 0.2ms
+// 反射调用：约 0.5ms ~ 5ms
+// 相差 10~100 倍
+
+// 但频繁读取仍有开销，需要控制频率
+object ProcMonitor {
+    
+    // 不要每帧都读，用采样策略
+    private var lastCheckTime = 0L
+    private const val CHECK_INTERVAL_MS = 100L // 每100ms检查一次
+    
+    fun checkMainThreadBinder() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastCheckTime < CHECK_INTERVAL_MS) return
+        lastCheckTime = now
+        
+        // 异步读取，不阻塞主线程
+        // 注意：读取的是主线程的状态，但读取操作在子线程
+        thread {
+            val mainTid = Looper.getMainLooper().thread.id
+            val wchan = readWchan(mainTid)
+            if (wchan.contains("binder")) {
+                // 主线程在等待Binder，上报
+                reportBinderBlock()
+            }
+        }
+    }
+    
+    private fun readWchan(tid: Long): String {
+        return try {
+            // 这是内核虚拟文件，不是真正的磁盘IO
+            File("/proc/${Process.myPid()}/task/$tid/wchan").readText()
+        } catch (e: Exception) { "" }
+    }
+}
+```
+缺点：  
+/proc文件读取有开销（远小于反射）  
+
 ## 系统调用	
 ### 主线程SP读写（MMKV 替代）
 ### 文件 IO 异步化
