@@ -150,3 +150,23 @@ Composable 函数的特点是反复执行（重组）：状态变化、父组件
 3.带key（key变化重新初始化）：var result by remember(id) {multableStateOf(XX(id))}  
 4.rememberSaveable（屏幕旋转后保留）：var text by rememberSaveable{multableStateOf(X)}  
 5.rememberXX系列：官方封装好的 remember，把常用的对象创建封装起来
+# collectAsState
+将 Kotlin 的 Flow（数据流，如 StateFlow、SharedFlow 或普通 Flow）转换为 Compose 能够识别并观察的 State 对象.  
+当数据发生变化时，Compose 会自动触发重组（Recomposition）来更新 UI。  
+遵循 Composable 的生命周期。当 Composable 进入组合时，它开始收集流；当 Composable 离开组合时，它自动停止收集，只要 Composable 在组合树里就一直收集，App 进入后台也在收集，浪费资源，可能有安全问题。  
+```
+// ViewModel
+val uiState = _uiState.asStateFlow()
+
+// Composable
+@Composable
+fun MyScreen(viewModel: MyViewModel) {
+    // 将 Flow 转换为 Compose State
+    val state by viewModel.uiState.collectAsState()
+    
+    // UI 会在 state 变化时自动刷新
+    Text(text = "Hello, ${state.name}")
+}
+```
+## collectAsStateWithLifecycle
+感知 Lifecycle 状态，默认在 Lifecycle.State.STARTED 以上才收集，App 进入后台（onStop）→ 自动停止收集，App 回到前台（onStart）→ 自动恢复收集。  
