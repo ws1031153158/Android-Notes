@@ -102,3 +102,56 @@ Window
                     └── LayoutNode（对应 Button）
 ```
 所以差异只在内部，ComposeView 也是个 View，ViewGroup 的一个子类，专门用于在传统的 Android View 体系（XML 布局）中承载、托管 Jetpack Compose UI 内容。
+# CMP + KMP VS Flutter
+## 语言与生态
+KMP/CMP：  
+语言	Kotlin  
+包生态	Maven/Gradle成熟  
+IDE支持	Android Studio/IntelliJ  
+
+Flutter：  
+语言	Dart  
+包生态	pub.dev较丰富  
+IDE支持	VS Code/Android Studio
+语言	Kotlin	Dart
+## 跨平台能力
+KMP/CMP：  
+Android	原生级  
+iOS	良好  
+Web	不支持  
+Desktop	支持	  
+原生交互	直接调用原生API  
+
+Flutter：  
+Android	优秀  
+iOS	良好  
+Web	支持但性能一般  
+Desktop	支持	  
+原生交互	需要Platform Channel  
+## 性能
+KMP/CMP： 
+渲染方式	各平台原生渲染  	
+Android性能	原生级别	  
+iOS性能	原生级别	  
+包体积	较小	  
+启动速度	快  
+
+Flutter： 
+渲染方式	自绘引擎（Skia）  	
+Android性能	接近原生	  
+iOS性能	有差距	  
+包体积	较大（含渲染引擎）	  
+启动速度		略慢
+## UI
+KMP/CMP  
+    各平台遵循各自设计规范  
+    Android → Material Design  
+    iOS → 看起来更原生  
+    优点：用户体验更符合平台习惯  
+    缺点：UI代码可能需要平台差异化处理  
+
+Flutter  
+    所有平台完全一致的UI  
+    优点：设计师只需出一套稿  
+    缺点：iOS上看起来不够原生  
+    
