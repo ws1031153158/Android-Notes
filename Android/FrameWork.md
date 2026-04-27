@@ -20,10 +20,13 @@ ViewModel：对 View 和 Model 的交互
 ViewBinding：提供数据绑定视图，数据改动反应到视图  
 dataBinding：提供双向绑定，互相影响（需要加 <layout/> 标签，通过 <data/> 标签设置要绑定的数据（类），在视图 xml 代码块中通过 @ 引用（采用 = 才是真正的双向绑定））      
 1.数据绑定会导致内存开销大，影响性能。  
-2.ViewModel 和 View 的绑定，使页面异常追踪变得不方便。有可能是 View 出错，也有可能是 ViewModel 的业务逻辑有问题，也有可能是 Model 的数据出错。  
+2.ViewModel 和 View 的绑定，使页面异常追踪变得不方便。有可能是 View 出错，也有可能是 ViewModel 的业务逻辑有问题，也有可能是 Model 的数据出错。    
+3.View 可以直接调用 ViewModel 的多个方法(vm.XXX)  
+4.状态可能分散在多个 StateFlow 里
 ## Tips
-Activity重建时，调用onRetainNonConfigurationInstance，把 ViewModelStore 保存起来，新 Activity 创建后重新拿到同一个 ViewModelStore，ViewModel 实例没变，数据还在。  
-而Activity 真正 finish()（用户按返回键等），viewModel数据才会同时销毁。
+1.Activity重建时，调用onRetainNonConfigurationInstance，把 ViewModelStore 保存起来，新 Activity 创建后重新拿到同一个 ViewModelStore，ViewModel 实例没变，数据还在。    
+2.Activity 真正 finish()（用户按返回键等），viewModel数据才会同时销毁（ViewModelStore.clear 主动清空vm，最后自己销毁）。    
+3.准确来说：ViewModel 生命周期 = 它被创建时绑定的 ViewModelStoreOwner。  
 ## DataBinding
 职责：通过 “适配器模式” + “数据驱动” 设计，规避 View 实例 Null 安全一致性问题，且 “数据驱动” 顺带免去 “调用 View 实例” 导致的冗余 “判空处理”和大量 “样板代码”。  
 ## LiveDta
@@ -32,11 +35,46 @@ Activity重建时，调用onRetainNonConfigurationInstance，把 ViewModelStore 
 3.就算不用 DataBinding，也能使 “单向依赖” 成为可能、规避潜在的内存泄漏等问题。  
 # MVI
 单向数据流动 + 状态集中管理（唯一数据源）  
-Model 主要指 View 的状态（会维护一个 data class ViewState 或者一个 sealed (相当于枚举类的扩展) class ViewEvent），View 指的是任一个 UI 的容器，I 是 Intent，把每个操作封装为 Intent，发送给 Model 处理（触发 State 的改变，View 对 State 监听，变化后自身也会做出调整（通过 Action 与 Model 联系，解耦）  
-model 暴露唯一入口，用来接收 view 唯一出口发出的 intent，同时也只有一个唯一出口用来向 view 返回 state，view 的唯一入口和此出口统一。  
-intent -> model -> view   
+Model/ViewModel 主要指 View 的状态（会维护一个 data class ViewState 或者一个 sealed (相当于枚举类的扩展) class ViewEvent），View 指的是任一个 UI 的容器，I 是 Intent，把每个操作封装为 Intent，发送给 Model/ViewModel 处理（触发 State 的改变，View 对 State 监听，变化后自身也会做出调整（通过 Action 与 Model/ViewModel 联系，解耦）  
+Model/ViewModel 暴露唯一入口，用来接收 view 唯一出口发出的 intent，同时也只有一个唯一出口用来向 view 返回 state，view 的唯一入口和此出口统一。  
+View 接收用户操作，封装为 intent 发送给 Model/ViewModel -> Model 处理 intent，创建新 State -> View 订阅 State，刷新界面   
 1.所有的操作最终都会转换成 State ，所以当复杂页面的 State 容易膨胀。    
-2.state 是不变的，因此每当 state 需要更新时都要创建新对象替代老对象，这会带来一定内存开销。    
+2.state 是不变的，因此每当 state 需要更新时都要创建新对象替代老对象，这会带来一定内存开销。      
+3.View 持有 vm 是必须的：订阅 uiState（单向数据流入）、调用方法/发送 Intent（单向事件流出）
+## 流程
+```
+// ViewModel
+val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+
+// View/Compose
+val state by vm.uiState.collectAsStateWithLifecycle()
+
+用户点击按钮
+    ↓
+View 发送 Intent
+vm.dispatch(Intent.LoadData)
+    ↓
+ViewModel 处理 Intent
+_uiState.update { it.copy(isLoading = true) }
+    ↓
+StateFlow 发射新值
+（去重：和上一个 State 不同才发射）
+    ↓
+collectAsStateWithLifecycle 收到新值
+触发 Compose 重组
+    ↓
+UI 刷新显示 loading
+
+关键点：
+View 订阅的是 StateFlow
+StateFlow 是热流，一直存在
+每次 update 产生新 State
+Compose 自动感知变化触发重组
+不是"新建 State 对象"就一定触发
+而是新 State 和旧 State 不相等才触发
+这就是为什么 UiState 用 data class
+data class 自动实现 equals() 比较每个字段
+```
 # 插件化
 APP 分为多个模块，一个模块一个 apk，分开打包，只发布主 APK，插件 APK 动态下发给主 apk
 ## Load Class
