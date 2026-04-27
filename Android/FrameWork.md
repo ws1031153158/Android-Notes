@@ -20,7 +20,10 @@ ViewModel：对 View 和 Model 的交互
 ViewBinding：提供数据绑定视图，数据改动反应到视图  
 dataBinding：提供双向绑定，互相影响（需要加 <layout/> 标签，通过 <data/> 标签设置要绑定的数据（类），在视图 xml 代码块中通过 @ 引用（采用 = 才是真正的双向绑定））      
 1.数据绑定会导致内存开销大，影响性能。  
-2.ViewModel 和 View 的绑定，使页面异常追踪变得不方便。有可能是 View 出错，也有可能是 ViewModel 的业务逻辑有问题，也有可能是 Model 的数据出错。
+2.ViewModel 和 View 的绑定，使页面异常追踪变得不方便。有可能是 View 出错，也有可能是 ViewModel 的业务逻辑有问题，也有可能是 Model 的数据出错。  
+## Tips
+Activity重建时，调用onRetainNonConfigurationInstance，把 ViewModelStore 保存起来，新 Activity 创建后重新拿到同一个 ViewModelStore，ViewModel 实例没变，数据还在。  
+而Activity 真正 finish()（用户按返回键等），viewModel数据才会同时销毁。
 ## DataBinding
 职责：通过 “适配器模式” + “数据驱动” 设计，规避 View 实例 Null 安全一致性问题，且 “数据驱动” 顺带免去 “调用 View 实例” 导致的冗余 “判空处理”和大量 “样板代码”。  
 ## LiveDta
