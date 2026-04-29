@@ -38,3 +38,77 @@
 锁升级逻辑：偏向锁→轻量级锁→重量级锁，JVM 要做一堆判断   
 释放锁：方法结束，必须主动释放监视器   
 这些操作：指令、判断、内存同步，全是额外耗时  
+# PriorityQueue
+优先级队列，默认：小顶堆。  
+<img width="803" height="418" alt="image" src="https://github.com/user-attachments/assets/96f7ec0e-0869-45c3-88a2-5ad0b024c876" />  
+
+## 底层
+动态数组实现的 最小二叉堆（完全二叉树）  
+插入、删除：O(logn)（堆是二叉树结构，树高 logn，上浮下沉最多遍历树高，所以是对数级复杂度）  
+取堆顶：O(1)  
+
+非线程安全，并发场景推荐 PriorityBlockingQueue  
+不允许null，会直接空指针，也不支持不可比较的元素（没有实现 Comparable、也没指定比较器的自定义对象）  
+
+大顶堆：PriorityQueue<Integer> maxHeap = new PriorityQueue<>((a,b) -> b - a);  
+## 二叉堆
+底层数组存储，逻辑是完全二叉树   
+添加：上浮；删除堆顶：下沉   
+### 父子节点下标公式（核心） 
+设当前节点下标：index：  
+父节点——parent=(index−1)÷2   
+左子节点——left=2×index+1   
+右子节点——right=2×index+2   
+举例：  
+下标 1 的父：(1−1)/2=0   
+下标 2 的父：(2−1)/2=0   
+下标 1 左孩子：3，右孩子：4  
+### 容量
+1.初始化  
+无参构造：DEFAULT_INITIAL_CAPACITY = 11   
+有参构造：可手动指定初始容量   
+
+2. 没有「负载因子」  
+ArrayList/HashMap 有负载因子    
+PriorityQueue 无负载因子  
+只靠 元素个数 == 数组长度 时触发扩容    
+
+3. 扩容源码规则    
+容量 < 64：每次 +2   
+容量 ≥ 64：扩容 1.5 倍（右移一位 /2 叠加）
+<img width="536" height="247" alt="image" src="https://github.com/user-attachments/assets/8c9f4314-1a4e-4065-9c59-c09af4ce5c8f" />  
+
+### 上浮 & 下沉
+1.siftUp 上浮（新增元素、offer）：  
+新元素加到数组末尾，不断和父节点比较，太小就往上浮，维持小顶堆。  
+从最后一个位置开始 ，比父节点小 → 父下来，自己往上 ，直到不小于父 / 到根节点  
+<img width="329" height="359" alt="image" src="https://github.com/user-attachments/assets/67aa054b-f34e-4b43-bc75-3f8234fc415b" />  
+
+
+siftDown 下沉（删除堆顶、poll）：  
+删除堆顶后，把末尾元素挪到堆顶，不断和左右子节点比较，和更小的子节点交换，向下沉。  
+堆顶换成末尾元素 ，找左右小孩最小值 ，自己比最小值大，就下沉交换 ，直到满足堆规则  
+<img width="604" height="447" alt="image" src="https://github.com/user-attachments/assets/dbfe2d40-a047-43cb-ae88-143c7065b410" />  
+
+
+扩容流程：  
+offer 添加元素  
+容量满 → 先扩容    
+元素放数组末尾   
+调用 siftUp 上浮   
+poll 删除堆顶  
+取出下标 0 元素   
+把最后一位元素放到下标 0   
+调用 siftDown 下沉重构堆  
+### 负载因子
+负载因子 = 一个 “提前扩容的警戒线”  
+不是等容器满了才扩容，而是用到一定比例就提前扩容，防止性能下降。  
+
+控制空间和效率的平衡：  
+负载因子越小 → 越不容易冲突，查询越快，但越占空间   
+负载因子越大 → 越省空间，但越容易冲突，变慢   
+提前扩容，避免卡顿，不是等满了再扩容，而是提前扩容，保证性能平稳。  
+  
+
+
+
