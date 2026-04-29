@@ -2835,3 +2835,191 @@ sharedPreferences 是一个 xml 的读取和存储操作，在使用前都会调
 ## 异步框架	
 ### RxJava 线程切换
 ### LiveData/Flow 线程安全
+# 错误处理
+## 错误分类
+1.网络错误:    
+无网络连接  
+请求超时  
+DNS 解析失败  
+
+2.HTTP错误:  
+401 未登录/Token 过期  
+403 无权限  
+404 资源不存在  
+500 服务器错误  
+
+
+3.业务错误:  
+success: false  
+服务器返回的业务异常  
+
+4.本地错误:  
+数据解析失败  
+本地数据库异常
+## 统一处理
+统一错误模型：  
+```
+sealed class AppError {
+    // 网络错误
+    data object NoNetwork : AppError()
+    data object Timeout : AppError()
+
+    // HTTP 错误
+    data object Unauthorized : AppError()   // 401
+    data object Forbidden : AppError()      // 403
+    data class HttpError(
+        val code: Int,
+        val message: String
+    ) : AppError()
+
+    // 业务错误
+    data class BusinessError(
+        val message: String
+    ) : AppError()
+
+    // 未知错误
+    data class Unknown(
+        val message: String
+    ) : AppError()
+}
+```
+
+1.OkHttp 拦截器捕获网络层错误  
+```
+class ErrorInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val response = try {
+            chain.proceed(chain.request())
+        } catch (e: Exception) {
+            // 网络层异常转换
+            throw when (e) {
+                is UnknownHostException -> NoNetworkException()
+                is SocketTimeoutException -> TimeoutException()
+                else -> e
+            }
+        }
+
+        // HTTP 错误码处理
+        when (response.code) {
+            401 -> throw UnauthorizedException()
+            403 -> throw ForbiddenException()
+            500 -> throw ServerException()
+        }
+
+        return response
+    }
+}
+```
+
+2.Repository 层统一转换为 AppError  
+```
+suspend fun getWatchlist(): Result<List<WatchlistItem>> {
+    return runCatching {
+        api.getWatchlist(bearerToken())
+    }.mapError { e ->
+        // 统一转换为 AppError
+        when (e) {
+            is NoNetworkException -> AppError.NoNetwork
+            is TimeoutException -> AppError.Timeout
+            is UnauthorizedException -> AppError.Unauthorized
+            else -> AppError.Unknown(e.message ?: "未知错误")
+        }
+    }
+}
+```
+
+3.ViewModel 层根据错误类型差异化处理  
+```
+fun loadWatchlist() {
+    viewModelScope.launch {
+        repository.getWatchlist()
+            .onSuccess { items ->
+                _uiState.update {
+                    it.copy(items = items, isLoading = false)
+                }
+            }
+            .onFailure { error ->
+                when (error) {
+                    is AppError.NoNetwork -> {
+                        // 加载本地缓存
+                        loadFromLocal()
+                        _uiState.update {
+                            it.copy(
+                                errorMessage = "网络不可用，显示缓存数据",
+                                isOffline = true
+                            )
+                        }
+                    }
+                    is AppError.Unauthorized -> {
+                        // Token 过期，跳转登录
+                        _uiState.update {
+                            it.copy(navigateToLogin = true)
+                        }
+                    }
+                    is AppError.Timeout -> {
+                        // 超时重试
+                        retryLoad()
+                    }
+                    else -> {
+                        _uiState.update {
+                            it.copy(errorMessage = error.message)
+                        }
+                    }
+                }
+            }
+    }
+}
+```
+## 用户体验
+1.无网络 → 显示缓存数据 + 离线提示  
+```
+// 不同错误展示不同 UI
+when {
+    uiState.isOffline -> {
+        // 顶部显示离线提示条
+        OfflineBanner()
+    }
+    uiState.errorMessage != null -> {
+        // Snackbar 提示
+        LaunchedEffect(uiState.errorMessage) {
+            snackbarHostState.showSnackbar(
+                message = uiState.errorMessage,
+                actionLabel = "重试"
+            )
+        }
+    }
+    uiState.items.isEmpty() && !uiState.isLoading -> {
+        // 空状态页
+        EmptyState(onRetry = vm::loadWatchlist)
+    }
+}
+```
+
+2.Token过期 → 自动跳转登录   
+3.超时 → 自动重试  
+```
+// Retrofit 配置重试
+val okHttpClient = OkHttpClient.Builder()
+    .addInterceptor(RetryInterceptor(maxRetry = 3))
+    .connectTimeout(10, TimeUnit.SECONDS)
+    .readTimeout(10, TimeUnit.SECONDS)
+    .build()
+
+class RetryInterceptor(private val maxRetry: Int) : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        var retryCount = 0
+        var response: Response
+        do {
+            response = chain.proceed(chain.request())
+            retryCount++
+        } while (!response.isSuccessful && retryCount < maxRetry)
+        return response
+    }
+}
+```
+
+4.业务错误 → Snackbar 提示具体原因
+## 监控运维
+1.客户端上报错误日志  
+2.结合后端监控告警  
+3.形成完整的错误闭环
