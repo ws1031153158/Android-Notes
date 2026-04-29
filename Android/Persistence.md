@@ -281,3 +281,213 @@ LruCache 针对内存缓存
 DisLruCache 充当存储设备缓存，将缓存写入 File，通过一个 editor 对象完成添加操作
 NetWork 从后端请求数据
 # ROOM
+基于 SQLite 封装，编译时 SQL 检查，支持 Flow/LiveData 响应式查询。    
+不用手写 Cursor 解析，自动映射对象,自动处理线程切换.
+## 核心组件
+Entity   → 定义数据表结构  
+Dao      → 定义数据操作接口  
+Database → 数据库入口，管理所有 Dao
+### Entity(数据表)
+```
+@Entity(tableName = "watchlist")
+data class WatchlistEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Int = 0,
+
+    @ColumnInfo(name = "code")
+    val code: String,
+
+    @ColumnInfo(name = "name")
+    val name: String,
+
+    @ColumnInfo(name = "type")
+    val type: String,
+
+    @ColumnInfo(name = "avg_cost")
+    val avgCost: Double? = null,
+
+    @ColumnInfo(name = "total_shares")
+    val totalShares: Double = 0.0,
+
+    @ColumnInfo(name = "last_price")
+    val lastPrice: Double = 0.0,
+
+    @ColumnInfo(name = "update_time")
+    val updateTime: Long = System.currentTimeMillis()
+)
+```
+### Dao（数据操作）
+```
+@Dao
+interface WatchlistDao {
+
+    // 查询所有（Flow 自动感知变化）
+    @Query("SELECT * FROM watchlist ORDER BY id DESC")
+    fun getAll(): Flow<List<WatchlistEntity>>
+
+    // 查询单条
+    @Query("SELECT * FROM watchlist WHERE id = :id")
+    suspend fun getById(id: Int): WatchlistEntity?
+
+    // 查询盈利超过某个值的持仓
+    @Query("SELECT * FROM watchlist WHERE avg_cost > 0 AND last_price > avg_cost * (1 + :minProfitPct / 100)")
+    fun getProfitableItems(minProfitPct: Double): Flow<List<WatchlistEntity>>
+
+    //  REPLACE  → 冲突时删除旧数据插入新数据
+    //  IGNORE   → 冲突时忽略新数据
+    //  ABORT    → 冲突时回滚（默认）
+    //  FAIL     → 冲突时报错
+    // 插入（冲突时替换）
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(item: WatchlistEntity)
+
+    // 批量插入
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(items: List<WatchlistEntity>)
+
+    // 更新
+    @Update
+    suspend fun update(item: WatchlistEntity)
+
+    // 删除单条
+    @Delete
+    suspend fun delete(item: WatchlistEntity)
+
+    // 按 id 删除
+    @Query("DELETE FROM watchlist WHERE id = :id")
+    suspend fun deleteById(id: Int)
+
+    // 清空表
+    @Query("DELETE FROM watchlist")
+    suspend fun deleteAll()
+
+    // 查询数量
+    @Query("SELECT COUNT(*) FROM watchlist")
+    suspend fun getCount(): Int
+}
+```
+### Database（数据库入口）
+```
+@Database(
+    entities = [WatchlistEntity::class],
+    version = 1,
+    exportSchema = false
+)
+abstract class AppDatabase : RoomDatabase() {
+
+    abstract fun watchlistDao(): WatchlistDao
+
+    companion object {
+        @Volatile
+        private var INSTANCE: AppDatabase? = null
+
+        fun getInstance(context: Context): AppDatabase {
+            return INSTANCE ?: synchronized(this) {
+                Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "finance_db"
+                )
+                .build()
+                .also { INSTANCE = it }
+            }
+        }
+    }
+}
+```
+### 使用
+```
+class WatchlistRepository(context: Context) {
+
+    private val dao = AppDatabase
+        .getInstance(context)
+        .watchlistDao()
+
+    // 离线优先：先返回本地数据，再更新
+    fun getWatchlist(): Flow<List<WatchlistEntity>> {
+        return dao.getAll()  // Flow 自动感知数据库变化
+    }
+
+    // 网络数据同步到本地
+    suspend fun syncFromNetwork() {
+        val remoteData = api.getWatchlist()
+        // 转换为 Entity
+        val entities = remoteData.map { it.toEntity() }
+        // 写入数据库，Flow 自动通知 UI 更新
+        dao.insertAll(entities)
+    }
+
+    suspend fun deleteItem(id: Int) {
+        dao.deleteById(id)
+    }
+}
+```
+
+数据库升级：  
+```
+
+//写 Migration 对象
+//指定 startVersion 和 endVersion
+//在 migrate() 里执行 ALTER TABLE 等 SQL
+//addMigrations() 注册到 Database
+//开发阶段可以用 fallbackToDestructiveMigration
+
+// 版本从 1 升级到 2，新增 profit_pct 字段
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            "ALTER TABLE watchlist ADD COLUMN profit_pct REAL"
+        )
+    }
+}
+
+// 版本从 2 升级到 3，新增一张表
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("""
+            CREATE TABLE IF NOT EXISTS position (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                watchlist_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                price REAL NOT NULL,
+                shares REAL NOT NULL
+            )
+        """)
+    }
+}
+
+// 注册迁移
+Room.databaseBuilder(
+    context,
+    AppDatabase::class.java,
+    "finance_db"
+)
+.addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+.build()
+
+// 开发阶段懒得写 Migration（会清空数据库）
+.fallbackToDestructiveMigration()
+```
+
+多表关联：  
+```
+// 一对多：一个 WatchlistItem 对应多个 Position
+data class WatchlistWithPositions(
+    @Embedded
+    val watchlist: WatchlistEntity,
+
+    @Relation(
+        parentColumn = "id",
+        entityColumn = "watchlist_id"
+    )
+    val positions: List<PositionEntity>
+)
+
+// Dao 里查询
+@Transaction
+@Query("SELECT * FROM watchlist WHERE id = :id")
+suspend fun getWatchlistWithPositions(
+    id: Int
+): WatchlistWithPositions
+// 也可通过 database.withTransaction { } 来支持事务，事务中任一操作失败，都会回滚
+```
