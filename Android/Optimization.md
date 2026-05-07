@@ -401,10 +401,350 @@ jobs:
           git push
 ```
 ## 热启动/温启动
-1.温启动：进程存在，但是 Activity 需要重新创建（Activity 被销毁：如退出应用后又重新启动应用。进程可能还在运行/系统因内存不足等原因将应用回收，然后用户又重新启动这个应用）   
+1.温启动：进程存在，但是 Activity 需要重新创建（Activity 被销毁：如退出应用后又重新启动应用。进程可能还在运行/系统因内存不足等原因将应用回收，然后用户又重新启动这个应用）  
+流程：Activity创建(onCreate)+布局(setContentView / inflate)+首帧渲染     
+```
+触发场景：用户按返回键退出，进程还在
+
+用户再次点击图标：
+    ① AMS 检查进程 → 存在 ✅
+    ② AMS 检查 Activity 栈 → 栈为空 或 Activity已销毁 ❌
+    ③ 需要重新创建 Activity
+
+App 进程收到消息：
+    跳过：进程创建（已存在）
+    跳过：Application.onCreate（已执行）
+    执行：Activity.onCreate()
+          setContentView() → inflate 布局
+          onStart()
+          onResume()
+          首帧渲染
+
+用户看到界面 ← 温启动结束
+```
+
+问题：  
+```
+// 进程级单例状态丢失
+// 进程还在，但 Activity 被销毁重建
+// 进程级单例（内存中的数据）还在
+// 但 Activity 相关的状态已经丢失
+
+// 常见错误：依赖 Activity 传递的数据，温启动后为空
+object UserSession {
+    // 进程级单例，温启动后依然存在 ✅
+    var currentUser: User? = null
+    var authToken: String? = null
+}
+
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // ❌ 错误：假设 UserSession 一定有数据
+        // 冷启动时：Application.onCreate 中初始化了 UserSession
+        // 温启动时：Application.onCreate 不执行！
+        //           但 UserSession 是进程级单例，数据还在 ✅
+        //           所以这里其实是安全的
+
+        // ❌ 真正的问题：依赖 Activity 传递的临时数据
+        // 比如：上一个 Activity 通过 Intent 传来的数据
+        // 温启动重建时，需要重新处理这些数据
+        val userId = intent.getStringExtra("userId") ?: run {
+            // 温启动时可能没有这个 extra
+            // 需要从其他地方恢复
+            UserSession.currentUser?.id ?: run {
+                // 真的没有，跳转登录
+                startActivity(Intent(this, LoginActivity::class.java))
+                finish()
+                return
+            }
+        }
+    }
+}
+
+// onSaveInstanceState 恢复
+class HomeActivity : AppCompatActivity() {
+
+    private var scrollPosition = 0
+    private var selectedTabIndex = 0
+
+    // 系统销毁 Activity 前调用（温启动场景）
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // 保存需要恢复的状态
+        outState.putInt("scroll_position", scrollPosition)
+        outState.putInt("selected_tab", selectedTabIndex)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_home)
+
+        // 温启动恢复状态
+        savedInstanceState?.let { state ->
+            scrollPosition = state.getInt("scroll_position", 0)
+            selectedTabIndex = state.getInt("selected_tab", 0)
+
+            // 恢复UI状态
+            recyclerView.scrollToPosition(scrollPosition)
+            tabLayout.selectTab(tabLayout.getTabAt(selectedTabIndex))
+        }
+    }
+}
+
+// 温启动每次都要重新 inflate 布局
+// 这是温启动的主要耗时来源
+
+// 优化方案一：ViewStub 延迟加载非首屏内容
+class HomeActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_home)
+
+        // 首屏必要内容立即加载
+        setupToolbar()
+        setupMainContent()
+
+        // 非首屏内容延迟加载
+        // 温启动时用户看到首屏后，再加载其他内容
+        viewStubSidePanel.setOnInflateListener { _, inflated ->
+            setupSidePanel(inflated)
+        }
+        // 用户点击侧边栏时才 inflate
+    }
+}
+
+// 优化方案二：Fragment 懒加载
+class HomeActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_home)
+
+        // 只加载首个 Tab 的 Fragment
+        if (savedInstanceState == null) {
+            supportFragmentManager.beginTransaction()
+                .add(R.id.container, HomeFragment())
+                .commit()
+            // 其他 Tab 的 Fragment 在用户切换时才创建
+        }
+    }
+}
+```
+
 2.热启动：进程存在，Activity 在后台，只需要走 onStart，但是如果一些内存为响应内存整理事件（如 onTrimMemory()）而被完全清除，则需要为了响应热启动而重新创建相应的对象，热启动显示的屏幕上行为和冷启动场景相同。系统进程显示空白屏幕，直到应用完成 Activity 呈现  
-### Activity 复用
-### 进程保活策略
+流程：onResume+首帧渲染    
+```
+用户按 Home 键：
+    Activity.onPause()
+    Activity.onStop()
+    进程继续存活，Activity 实例保留在内存
+
+用户点击图标回来：
+    ① AMS 检查进程 → 存在 ✅
+    ② AMS 检查 Activity 栈 → Activity 实例存在 ✅
+    ③ 发送 Resume 消息到 App 进程
+
+App 进程收到消息：
+    Activity.onRestart()
+    Activity.onStart()
+    Activity.onResume()
+    ViewRootImpl 触发重绘
+    首帧渲染上屏
+
+用户看到界面 ← 热启动结束
+```
+
+问题：  
+```
+① onResume 中的耗时操作
+② 数据刷新（重新请求网络/数据库）
+③ 动画重新启动
+④ 首帧重绘耗时
+⑤ 图片重新加载（如果被回收）
+```
+### 温启动优化
+1.Application 数据预热：  
+```
+// 温启动时 Application 不重新执行
+// 但进程级缓存还在
+// 可以在冷启动时多做一些预热，温启动直接用
+
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+
+        // 预热数据缓存（温启动时直接命中）
+        GlobalScope.launch(Dispatchers.IO) {
+            // 预加载用户数据到内存
+            UserCache.preload(this@MyApplication)
+            // 预加载配置到内存
+            ConfigCache.preload(this@MyApplication)
+        }
+    }
+}
+
+// 温启动时 Activity 直接从内存缓存取数据
+// 无需重新请求网络或读取数据库
+object UserCache {
+    private var cachedUser: User? = null
+
+    suspend fun preload(context: Context) {
+        cachedUser = withContext(Dispatchers.IO) {
+            AppDatabase.getInstance(context).userDao().getCurrentUser()
+        }
+    }
+
+    fun getUser(): User? = cachedUser
+}
+```
+
+2.进程保活策略:  
+```
+// 让进程存活更长时间
+// 用户下次启动时走温启动而非冷启动
+
+// 方案：前台 Service（最强保活，但影响用户体验，谨慎使用）
+// 方案：1像素 Activity（灰色地带，不推荐）
+// 方案：JobScheduler 定期唤醒（合规方案）
+
+// 推荐方案：合理使用 WorkManager 保持进程活跃
+class DataSyncWorker(context: Context, params: WorkerParameters)
+    : CoroutineWorker(context, params) {
+
+    override suspend fun doWork(): Result {
+        // 定期同步数据，顺带保持进程活跃
+        syncLatestData()
+        return Result.success()
+    }
+}
+
+// 注册定期任务
+WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+    "data_sync",
+    ExistingPeriodicWorkPolicy.KEEP,
+    PeriodicWorkRequestBuilder<DataSyncWorker>(
+        15, TimeUnit.MINUTES  // 最小间隔15分钟
+    ).build()
+)
+```
+
+### 热启动优化
+1.onResume 瘦身  
+```
+    override fun onResume() {
+        super.onResume()
+
+        // 只做必须在 onResume 做的事
+        // 比如：恢复动画、注册监听器
+        resumeAnimations()
+        registerSensorListener()
+
+        // 数据刷新：判断是否真的需要
+        refreshIfNeeded()
+    }
+
+    private fun refreshIfNeeded() {
+        val now = System.currentTimeMillis()
+        val lastRefreshTime = PreferenceManager
+            .getDefaultSharedPreferences(this)
+            .getLong("last_refresh", 0)
+
+        // 超过5分钟才刷新，避免每次热启动都请求网络
+        if (now - lastRefreshTime > 5 * 60 * 1000) {
+            lifecycleScope.launch {
+                refreshData()
+            }
+        }
+    }
+```
+
+2.数据缓存  
+```
+class HomeViewModel : ViewModel() {
+
+    // 内存缓存：热启动直接用，无需重新请求
+    private var cachedData: HomeData? = null
+    private var cacheTime: Long = 0
+
+    fun loadHomeData(forceRefresh: Boolean = false) {
+        viewModelScope.launch {
+
+            // 热启动场景：内存缓存还在，直接展示
+            cachedData?.let { cache ->
+                val cacheAge = System.currentTimeMillis() - cacheTime
+                if (!forceRefresh && cacheAge < CACHE_VALID_DURATION) {
+                    // 直接用缓存，热启动无感知
+                    _uiState.value = UiState.Success(cache)
+                    return@launch
+                }
+            }
+
+            // 缓存失效或强制刷新：先展示旧数据，后台更新
+            cachedData?.let {
+                _uiState.value = UiState.Success(it) // 先展示旧数据
+            }
+
+            // 后台静默更新
+            try {
+                val newData = repository.fetchHomeData()
+                cachedData = newData
+                cacheTime = System.currentTimeMillis()
+                _uiState.value = UiState.Success(newData)
+            } catch (e: Exception) {
+                // 更新失败，旧数据依然可用
+                if (cachedData == null) {
+                    _uiState.value = UiState.Error(e)
+                }
+            }
+        }
+    }
+
+    companion object {
+        private const val CACHE_VALID_DURATION = 5 * 60 * 1000L // 5分钟
+    }
+}
+```
+
+3.图片缓存  
+```
+// 热启动时图片被回收是常见问题
+// Glide/Coil 有内存缓存，但内存紧张时会被回收
+
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+
+        // 配置 Glide 内存缓存大小
+        // 确保热启动时图片还在内存中
+        GlideBuilder()
+            .setMemoryCache(
+                LruResourceCache(
+                    // 根据设备内存动态调整
+                    calculateMemoryCacheSize(this)
+                )
+            )
+    }
+
+    private fun calculateMemoryCacheSize(context: Context): Long {
+        val am = context.getSystemService(ActivityManager::class.java)
+        val memInfo = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(memInfo)
+
+        return when {
+            memInfo.totalMem > 4L * 1024 * 1024 * 1024 -> // >4GB
+                128 * 1024 * 1024L  // 128MB 图片缓存
+
+            memInfo.totalMem > 2L * 1024 * 1024 * 1024 -> // >2GB
+                64 * 1024 * 1024L   // 64MB
+
+            else ->
+                32 * 1024 * 1024L   // 32MB
+        }
+    }
+}
+```
+
 ## 启动任务编排
 ### 有向无环图（DAG）任务依赖
 根据依赖关系排序生成有向无环图，最后由优先级执行 task。任务可以分为（init 前、后，空闲，子、主线程等 task）       
