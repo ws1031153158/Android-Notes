@@ -1,4 +1,21 @@
 # 启动优化	     
+## 测量
+```
+# 测量冷启动
+adb shell am start -W -S com.xxx.app/.MainActivity
+# -S 表示先 force-stop，确保冷启动
+
+# 测量温启动（进程存在，Activity 销毁）
+# 先按返回键退出 App（不要 force-stop）
+adb shell am start -W com.xxx.app/.MainActivity
+
+# 输出：
+# Status: ok
+# LaunchState: COLD / WARM / HOT  ← 系统自动判断
+# ThisTime: 234ms
+# TotalTime: 456ms
+# WaitTime: 478ms
+```
 ## 冷启动
 冷启动：进程不存在，应用自设备启动后或系统终止应用后首次启动，耗时最多，是衡量启动耗时的标准  
 ### 完整流程
