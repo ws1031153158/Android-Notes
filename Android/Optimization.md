@@ -1283,16 +1283,710 @@ fun releaseBuffer(buffer: ByteArray) {
 3.后台 GC  
 但是，正常来讲 GC 是系统决定的，非必要应用侧不应该主动调用显式 GC，而是去分析内存问题
 ## 监控
+```
+┌─────────────────────────────────────────────────────────┐
+│                    启动监控体系                           │
+├─────────────────────────────────────────────────────────┤
+│  数据采集层                                               │
+│  ├── 启动类型识别（冷/温/热）                             │
+│  ├── 分阶段耗时采集                                       │
+│  ├── 设备信息采集                                         │
+│  └── 异常信息采集                                         │
+├─────────────────────────────────────────────────────────┤
+│  数据上报层                                               │
+│  ├── 实时上报（关键指标）                                  │
+│  ├── 批量上报（详细数据）                                  │
+│  └── 采样策略（控制上报量）                               │
+├─────────────────────────────────────────────────────────┤
+│  数据分析层                                               │
+│  ├── P50 / P90 / P99 分位数                              │
+│  ├── 多维度拆分（机型/系统/版本）                         │
+│  └── 趋势分析（版本对比）                                  │
+├─────────────────────────────────────────────────────────┤
+│  报警层                                                   │
+│  ├── 阈值报警                                             │
+│  ├── 环比劣化报警                                         │
+│  └── 灰度监控                                             │
+└─────────────────────────────────────────────────────────┘
+```
 ### 核心指标
 1.冷启动 P50 / P90 / P99 耗时
 2.首屏展示时间（reportFullyDrawn）
 3.启动成功率（启动期间 Crash 率）
 4.启动期间 ANR 率
-### 分段指标
+#### 分段指标
 1.Application 耗时
 2.首个 Activity onCreate 耗时
 3.布局 inflate 耗时
 4.首帧渲染耗时
+### 数据采集
+1.启动节点：  
+```
+T0: 进程创建时间
+    └── Application.attachBaseContext() 中记录
+
+T1: Application.onCreate() 开始
+T2: Application.onCreate() 结束
+    └── T2 - T1 = Application 初始化耗时
+
+T3: 首个 Activity.onCreate() 开始
+T4: setContentView() 完成
+    └── T4 - T3 = 布局加载耗时
+
+T5: onResume() 完成
+T6: 首帧上屏（ViewTreeObserver.OnPreDrawListener）
+    └── T6 - T5 = 首帧渲染耗时
+
+T7: reportFullyDrawn()（真实内容展示完成）
+    └── T7 - T6 = 数据加载耗时
+
+关键指标：
+├── 总启动耗时 = T7 - T0（冷启动）
+├── Application 耗时 = T2 - T1
+├── Activity 耗时 = T6 - T3
+└── 首屏完整耗时 = T7 - T0
+```
+
+2.采集：  
+```
+// ================================
+// 启动时间记录器
+// ================================
+object StartupTracer {
+
+    // 所有时间点（使用 elapsedRealtime，不受系统时间调整影响）
+    private val timePoints = ConcurrentHashMap<String, Long>()
+
+    // 分阶段耗时（任务级别）
+    private val stageCosts = ConcurrentHashMap<String, Long>()
+
+    // 启动类型
+    var startupType: StartupType = StartupType.COLD
+
+    // ================================
+    // 记录时间点
+    // ================================
+    fun mark(point: TimePoint) {
+        timePoints[point.key] = SystemClock.elapsedRealtime()
+    }
+
+    fun markWithValue(point: TimePoint, timeMs: Long) {
+        timePoints[point.key] = timeMs
+    }
+
+    // ================================
+    // 记录阶段耗时（用于任务级监控）
+    // ================================
+    fun recordStage(stageName: String, costMs: Long) {
+        stageCosts[stageName] = costMs
+    }
+
+    inline fun <T> traceStage(stageName: String, block: () -> T): T {
+        val start = SystemClock.elapsedRealtime()
+        return try {
+            block()
+        } finally {
+            val cost = SystemClock.elapsedRealtime() - start
+            recordStage(stageName, cost)
+        }
+    }
+
+    // ================================
+    // 计算各阶段耗时
+    // ================================
+    fun buildReport(): StartupReport {
+        val t0 = timePoints[TimePoint.PROCESS_START.key] ?: 0L
+        val t1 = timePoints[TimePoint.APP_CREATE_START.key] ?: 0L
+        val t2 = timePoints[TimePoint.APP_CREATE_END.key] ?: 0L
+        val t3 = timePoints[TimePoint.ACTIVITY_CREATE_START.key] ?: 0L
+        val t4 = timePoints[TimePoint.SET_CONTENT_VIEW_END.key] ?: 0L
+        val t5 = timePoints[TimePoint.ON_RESUME_END.key] ?: 0L
+        val t6 = timePoints[TimePoint.FIRST_FRAME.key] ?: 0L
+        val t7 = timePoints[TimePoint.FULLY_DRAWN.key] ?: 0L
+
+        return StartupReport(
+            startupType = startupType,
+
+            // 核心指标
+            totalCostMs = t7 - t0,
+            ttidMs = t6 - t0,
+            ttfdMs = t7 - t0,
+
+            // 分阶段指标
+            processCreateMs = t1 - t0,
+            appCreateMs = t2 - t1,
+            activityCreateMs = t4 - t3,
+            firstFrameMs = t6 - t5,
+            dataLoadMs = t7 - t6,
+
+            // 任务级明细
+            stageCosts = stageCosts.toMap(),
+
+            // 设备信息
+            deviceInfo = DeviceInfo.collect()
+        )
+    }
+
+    fun reset() {
+        timePoints.clear()
+        stageCosts.clear()
+    }
+}
+
+// 时间点枚举
+enum class TimePoint(val key: String) {
+    PROCESS_START("process_start"),
+    APP_CREATE_START("app_create_start"),
+    APP_CREATE_END("app_create_end"),
+    ACTIVITY_CREATE_START("activity_create_start"),
+    SET_CONTENT_VIEW_END("set_content_view_end"),
+    ON_RESUME_END("on_resume_end"),
+    FIRST_FRAME("first_frame"),
+    FULLY_DRAWN("fully_drawn")
+}
+
+enum class StartupType { COLD, WARM, HOT }
+```
+
+3.埋点：  
+```
+// ================================
+// 启动时间记录器
+// ================================
+object StartupTracer {
+
+    // 所有时间点（使用 elapsedRealtime，不受系统时间调整影响）
+    private val timePoints = ConcurrentHashMap<String, Long>()
+
+    // 分阶段耗时（任务级别）
+    private val stageCosts = ConcurrentHashMap<String, Long>()
+
+    // 启动类型
+    var startupType: StartupType = StartupType.COLD
+
+    // ================================
+    // 记录时间点
+    // ================================
+    fun mark(point: TimePoint) {
+        timePoints[point.key] = SystemClock.elapsedRealtime()
+    }
+
+    fun markWithValue(point: TimePoint, timeMs: Long) {
+        timePoints[point.key] = timeMs
+    }
+
+    // ================================
+    // 记录阶段耗时（用于任务级监控）
+    // ================================
+    fun recordStage(stageName: String, costMs: Long) {
+        stageCosts[stageName] = costMs
+    }
+
+    inline fun <T> traceStage(stageName: String, block: () -> T): T {
+        val start = SystemClock.elapsedRealtime()
+        return try {
+            block()
+        } finally {
+            val cost = SystemClock.elapsedRealtime() - start
+            recordStage(stageName, cost)
+        }
+    }
+
+    // ================================
+    // 计算各阶段耗时
+    // ================================
+    fun buildReport(): StartupReport {
+        val t0 = timePoints[TimePoint.PROCESS_START.key] ?: 0L
+        val t1 = timePoints[TimePoint.APP_CREATE_START.key] ?: 0L
+        val t2 = timePoints[TimePoint.APP_CREATE_END.key] ?: 0L
+        val t3 = timePoints[TimePoint.ACTIVITY_CREATE_START.key] ?: 0L
+        val t4 = timePoints[TimePoint.SET_CONTENT_VIEW_END.key] ?: 0L
+        val t5 = timePoints[TimePoint.ON_RESUME_END.key] ?: 0L
+        val t6 = timePoints[TimePoint.FIRST_FRAME.key] ?: 0L
+        val t7 = timePoints[TimePoint.FULLY_DRAWN.key] ?: 0L
+
+        return StartupReport(
+            startupType = startupType,
+
+            // 核心指标
+            totalCostMs = t7 - t0,
+            ttidMs = t6 - t0,
+            ttfdMs = t7 - t0,
+
+            // 分阶段指标
+            processCreateMs = t1 - t0,
+            appCreateMs = t2 - t1,
+            activityCreateMs = t4 - t3,
+            firstFrameMs = t6 - t5,
+            dataLoadMs = t7 - t6,
+
+            // 任务级明细
+            stageCosts = stageCosts.toMap(),
+
+            // 设备信息
+            deviceInfo = DeviceInfo.collect()
+        )
+    }
+
+    fun reset() {
+        timePoints.clear()
+        stageCosts.clear()
+    }
+}
+
+// 时间点枚举
+enum class TimePoint(val key: String) {
+    PROCESS_START("process_start"),
+    APP_CREATE_START("app_create_start"),
+    APP_CREATE_END("app_create_end"),
+    ACTIVITY_CREATE_START("activity_create_start"),
+    SET_CONTENT_VIEW_END("set_content_view_end"),
+    ON_RESUME_END("on_resume_end"),
+    FIRST_FRAME("first_frame"),
+    FULLY_DRAWN("fully_drawn")
+}
+
+enum class StartupType { COLD, WARM, HOT }
+
+
+// ================================
+// Activity 生命周期自动埋点
+// ================================
+class StartupLifecycleCallback : Application.ActivityLifecycleCallbacks {
+
+    // 只监控启动的第一个 Activity
+    private var isFirstActivity = true
+
+    override fun onActivityCreated(
+        activity: Activity,
+        savedInstanceState: Bundle?
+    ) {
+        if (!isFirstActivity) return
+        isFirstActivity = false
+
+        // 判断启动类型
+        StartupTracer.startupType = when {
+            savedInstanceState != null -> StartupType.WARM
+            else -> StartupType.COLD
+            // 热启动在 onRestart 中判断
+        }
+
+        StartupTracer.mark(TimePoint.ACTIVITY_CREATE_START)
+
+        // 监听 setContentView 完成
+        // 通过 OnContentChangedCallback 实现
+        if (activity is AppCompatActivity) {
+            activity.addContentChangedCallback()
+        }
+    }
+
+    override fun onActivityStarted(activity: Activity) {
+        // 热启动检测
+        if (activity.isResumedFromBackground()) {
+            StartupTracer.startupType = StartupType.HOT
+            StartupTracer.mark(TimePoint.ACTIVITY_CREATE_START)
+        }
+    }
+
+    override fun onActivityResumed(activity: Activity) {
+        if (!isMonitoringActivity(activity)) return
+        StartupTracer.mark(TimePoint.ON_RESUME_END)
+
+        // 注册首帧回调
+        registerFirstFrameCallback(activity)
+    }
+
+    private fun registerFirstFrameCallback(activity: Activity) {
+        activity.window.decorView.viewTreeObserver
+            .addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    activity.window.decorView.viewTreeObserver
+                        .removeOnPreDrawListener(this)
+
+                    StartupTracer.mark(TimePoint.FIRST_FRAME)
+
+                    // 首帧完成，可以上报 TTID
+                    reportTTID()
+                    return true
+                }
+            })
+    }
+
+    // 其他回调省略
+    override fun onActivityPaused(activity: Activity) {}
+    override fun onActivityStopped(activity: Activity) {}
+    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+    override fun onActivityDestroyed(activity: Activity) {}
+}
+
+
+// ================================
+// Activity 中的 TTFD 上报
+// ================================
+class HomeActivity : AppCompatActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_home)
+        StartupTracer.mark(TimePoint.SET_CONTENT_VIEW_END)
+
+        showSkeleton()
+
+        viewModel.uiState.observe(this) { state ->
+            if (state is UiState.Success) {
+                renderContent(state.data)
+                hideSkeleton()
+
+                // T7：真实内容展示完成
+                StartupTracer.mark(TimePoint.FULLY_DRAWN)
+                reportFullyDrawn() // 通知系统
+
+                // 上报完整启动数据
+                reportStartup()
+            }
+        }
+    }
+
+    private fun reportStartup() {
+        val report = StartupTracer.buildReport()
+        StartupReporter.report(report)
+        StartupTracer.reset() // 重置，准备下次启动
+    }
+}
+```
+
+4.设备信息：  
+```
+// ================================
+// 设备信息（用于多维度分析）
+// ================================
+data class DeviceInfo(
+    val model: String,           // 机型
+    val brand: String,           // 品牌
+    val androidVersion: Int,     // Android 版本
+    val sdkVersion: Int,         // SDK 版本
+    val cpuCores: Int,           // CPU 核心数
+    val totalRamMB: Long,        // 总内存
+    val availableRamMB: Long,    // 可用内存
+    val isLowEndDevice: Boolean, // 是否低端机
+    val networkType: String,     // 网络类型
+    val appVersion: String,      // App 版本
+    val isFirstLaunch: Boolean,  // 是否首次启动
+    val batteryLevel: Int        // 电量（低电量影响性能）
+) {
+    companion object {
+        fun collect(): DeviceInfo {
+            val context = AppContext.get()
+            val am = context.getSystemService(ActivityManager::class.java)
+            val memInfo = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(memInfo)
+
+            return DeviceInfo(
+                model = Build.MODEL,
+                brand = Build.BRAND,
+                androidVersion = Build.VERSION.RELEASE.toIntOrNull() ?: 0,
+                sdkVersion = Build.VERSION.SDK_INT,
+                cpuCores = Runtime.getRuntime().availableProcessors(),
+                totalRamMB = memInfo.totalMem / 1024 / 1024,
+                availableRamMB = memInfo.availMem / 1024 / 1024,
+                isLowEndDevice = am.isLowRamDevice,
+                networkType = getNetworkType(context),
+                appVersion = BuildConfig.VERSION_NAME,
+                isFirstLaunch = isFirstLaunch(context),
+                batteryLevel = getBatteryLevel(context)
+            )
+        }
+
+        private fun getNetworkType(context: Context): String {
+            val cm = context.getSystemService(ConnectivityManager::class.java)
+            return when {
+                cm.activeNetwork == null -> "none"
+                cm.getNetworkCapabilities(cm.activeNetwork)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "wifi"
+                else -> "cellular"
+            }
+        }
+    }
+}
+```
+### 数据上报
+1.数据结构：  
+```
+data class StartupReport(
+    // 基础信息
+    val startupType: StartupType,
+    val timestamp: Long = System.currentTimeMillis(),
+    val sessionId: String = UUID.randomUUID().toString(),
+
+    // 核心指标（毫秒）
+    val totalCostMs: Long,    // 总启动耗时
+    val ttidMs: Long,         // Time To Initial Display
+    val ttfdMs: Long,         // Time To Full Display
+
+    // 分阶段指标
+    val processCreateMs: Long,  // 进程创建耗时
+    val appCreateMs: Long,      // Application 初始化耗时
+    val activityCreateMs: Long, // Activity 创建耗时
+    val firstFrameMs: Long,     // 首帧渲染耗时
+    val dataLoadMs: Long,       // 数据加载耗时
+
+    // 任务级明细
+    val stageCosts: Map<String, Long>,
+
+    // 设备信息
+    val deviceInfo: DeviceInfo,
+
+    // 异常信息
+    val hasException: Boolean = false,
+    val exceptionMsg: String? = null
+)
+```
+
+2.采样策略：  
+```
+// ================================
+// 采样上报（控制上报量，节省流量和服务器压力）
+// ================================
+object StartupReporter {
+
+    // 采样率配置（从服务端下发，可动态调整）
+    private var samplingRate = 0.1f  // 默认10%采样
+
+    // 低端机全量上报（低端机问题更多，需要更多数据）
+    private var lowEndSamplingRate = 1.0f
+
+    fun report(report: StartupReport) {
+        val rate = if (report.deviceInfo.isLowEndDevice) {
+            lowEndSamplingRate
+        } else {
+            samplingRate
+        }
+
+        // 采样判断
+        if (Math.random() > rate) return
+
+        // 慢启动全量上报（不受采样限制）
+        val isSlowStartup = when (report.startupType) {
+            StartupType.COLD -> report.totalCostMs > 3000
+            StartupType.WARM -> report.totalCostMs > 1500
+            StartupType.HOT  -> report.totalCostMs > 500
+        }
+
+        if (isSlowStartup || Math.random() <= rate) {
+            doReport(report)
+        }
+    }
+
+    private fun doReport(report: StartupReport) {
+        // 序列化为 JSON
+        val json = buildReportJson(report)
+
+        // 批量上报（积累一定数量后一次性发送）
+        ReportBatcher.add("startup", json)
+    }
+
+    private fun buildReportJson(report: StartupReport): JSONObject {
+        return JSONObject().apply {
+            put("type", report.startupType.name)
+            put("total_ms", report.totalCostMs)
+            put("ttid_ms", report.ttidMs)
+            put("ttfd_ms", report.ttfdMs)
+            put("app_create_ms", report.appCreateMs)
+            put("activity_create_ms", report.activityCreateMs)
+            put("first_frame_ms", report.firstFrameMs)
+            put("data_load_ms", report.dataLoadMs)
+
+            // 分阶段明细
+            put("stages", JSONObject(report.stageCosts))
+
+            // 设备信息
+            put("device_model", report.deviceInfo.model)
+            put("android_version", report.deviceInfo.androidVersion)
+            put("ram_mb", report.deviceInfo.totalRamMB)
+            put("is_low_end", report.deviceInfo.isLowEndDevice)
+            put("network", report.deviceInfo.networkType)
+            put("app_version", report.deviceInfo.appVersion)
+        }
+    }
+}
+```
+
+3.批量上报：  
+```
+// ================================
+// 批量上报器（减少网络请求次数）
+// ================================
+object ReportBatcher {
+
+    private val buffer = ConcurrentLinkedQueue<Pair<String, JSONObject>>()
+    private const val MAX_BATCH_SIZE = 20
+    private const val FLUSH_INTERVAL_MS = 30_000L // 30秒
+
+    init {
+        // 定期 flush
+        GlobalScope.launch(Dispatchers.IO) {
+            while (true) {
+                delay(FLUSH_INTERVAL_MS)
+                flush()
+            }
+        }
+    }
+
+    fun add(type: String, data: JSONObject) {
+        buffer.offer(Pair(type, data))
+
+        // 达到批量大小立即上报
+        if (buffer.size >= MAX_BATCH_SIZE) {
+            GlobalScope.launch(Dispatchers.IO) { flush() }
+        }
+    }
+
+    private suspend fun flush() {
+        if (buffer.isEmpty()) return
+
+        val batch = mutableListOf<Pair<String, JSONObject>>()
+        while (batch.size < MAX_BATCH_SIZE) {
+            batch.add(buffer.poll() ?: break)
+        }
+
+        try {
+            APMApi.reportBatch(batch)
+        } catch (e: Exception) {
+            // 上报失败，重新入队
+            batch.forEach { buffer.offer(it) }
+        }
+    }
+}
+```
+### 数据分析
+1.核心维度：  
+```
+线上数据分析维度：
+
+① 时间维度
+   ├── 按小时/天/周趋势
+   ├── 版本发布前后对比
+   └── 灰度版本 vs 全量版本
+
+② 设备维度
+   ├── 机型 Top 20 分布
+   ├── Android 版本分布
+   ├── 高/中/低端机分层
+   └── 内存大小分层
+
+③ 网络维度
+   ├── WiFi vs 4G vs 5G
+   └── 弱网场景
+
+④ 业务维度
+   ├── 新用户 vs 老用户
+   ├── 首次安装 vs 更新后
+   └── 不同入口（图标/通知/外链）
+```
+
+2.分位计算：  
+```
+// 为什么用分位数而不是平均值？
+// 平均值会被极端值拉偏
+// 例：99个用户800ms，1个用户30000ms
+//     平均值 = (99*800 + 30000) / 100 = 1092ms
+//     P99 = 30000ms（真实反映最差体验）
+//     P50 = 800ms（反映大多数用户体验）
+
+// 服务端计算分位数（伪代码）
+fun calculatePercentiles(values: List<Long>): PercentileResult {
+    val sorted = values.sorted()
+    val size = sorted.size
+
+    return PercentileResult(
+        p50 = sorted[(size * 0.50).toInt()],
+        p75 = sorted[(size * 0.75).toInt()],
+        p90 = sorted[(size * 0.90).toInt()],
+        p95 = sorted[(size * 0.95).toInt()],
+        p99 = sorted[(size * 0.99).toInt()]
+    )
+}
+
+// 上报时需要上报原始值，服务端计算分位数
+// 客户端不做分位数计算（需要大量数据才有意义）
+```
+### 告警
+1.告警策略：  
+```
+// ================================
+// 报警规则配置
+// ================================
+data class AlertRule(
+    val name: String,
+    val startupType: StartupType,
+    val metric: String,          // 监控指标
+    val percentile: Int,         // 分位数（50/90/99）
+    val threshold: Long,         // 绝对阈值（ms）
+    val degradationRate: Float,  // 环比劣化率（0.1 = 10%）
+    val minSampleSize: Int       // 最小样本量（样本太少不报警）
+)
+
+// 报警规则示例
+val alertRules = listOf(
+    // 冷启动 P90 超过 3000ms 报警
+    AlertRule(
+        name = "cold_start_p90_threshold",
+        startupType = StartupType.COLD,
+        metric = "total_ms",
+        percentile = 90,
+        threshold = 3000,
+        degradationRate = Float.MAX_VALUE, // 不检查环比
+        minSampleSize = 1000
+    ),
+
+    // 冷启动 P50 环比劣化超过 10% 报警
+    AlertRule(
+        name = "cold_start_p50_degradation",
+        startupType = StartupType.COLD,
+        metric = "total_ms",
+        percentile = 50,
+        threshold = Long.MAX_VALUE, // 不检查绝对阈值
+        degradationRate = 0.1f,     // 10% 劣化
+        minSampleSize = 1000
+    ),
+
+    // Application 初始化 P90 超过 500ms 报警
+    AlertRule(
+        name = "app_create_p90_threshold",
+        startupType = StartupType.COLD,
+        metric = "app_create_ms",
+        percentile = 90,
+        threshold = 500,
+        degradationRate = Float.MAX_VALUE,
+        minSampleSize = 500
+    )
+)
+```
+
+2.灰度监控：  
+```
+// ================================
+// 灰度发布期间的监控策略
+// ================================
+object GrayMonitor {
+
+    // 灰度期间提高采样率
+    fun onGrayRelease() {
+        StartupReporter.samplingRate = 1.0f  // 全量采样
+        StartupReporter.lowEndSamplingRate = 1.0f
+    }
+
+    // 灰度结束恢复正常采样
+    fun onGrayEnd() {
+        StartupReporter.samplingRate = 0.1f
+    }
+
+    // 灰度版本 vs 老版本实时对比
+    // 服务端按 version_name 分组计算指标
+    // 如果灰度版本 P50 劣化 > 5% → 立即报警
+    // 可以快速回滚，避免影响全量用户
+}
+```
 ## Tips
 1.异步任务过多会抢占首帧渲染的 CPU 资源，需要平衡  
 2.Splash 展示期间用户已经在等待，不是"免费"时间，也不要刻意放入过多耗时任务  
