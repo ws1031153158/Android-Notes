@@ -1173,7 +1173,21 @@ class SplashActivity : AppCompatActivity() {
 ## 类加载优化
 1.首次安装：JIT 编译，类需要解释执行  
 2.类加载顺序不优化 → 缺页中断频繁  
-3.类验证（Class Verify）耗时（但建议保留，确保类字节码合法、类型安全、文件完整等）
+3.类验证（Class Verify）耗时（但建议保留，确保类字节码合法、类型安全、文件完整等）  
+```
+类的首次加载流程：
+① ClassLoader 查找类定义（在 Dex 文件中查找）
+② 读取类的字节码
+③ 验证字节码（Class Verify）
+④ 分配 Class 对象内存
+⑤ 执行静态初始化块 <clinit>
+
+首次加载耗时：0.1ms ~ 5ms（取决于类的复杂度）
+启动阶段需要加载数百个类 → 累计耗时显著
+
+预加载：在用户看 Splash 时，提前触发类加载
+        进入首页时类已在内存中，直接使用
+```
 ### 类预加载
 一个类的加载耗时不多，但是在几百上千的基数上，也会延迟启动时间，将进入首页的 class 对象，使用线程池提前预加载进来，在类下次使用时则可以直接使用而不需要触发类加载   
 Class.forName() 只加载类本身以及静态变量的引用类，new 类实例可以额外加载类成员变量的引用类  
@@ -1252,12 +1266,441 @@ class DexReorderTransform : Transform() {
 ```
 
 3.验证效果:  
-统计缺页中断：simpleperf stat -p [pid] --event major-faults,minor-faults
+统计缺页中断：simpleperf stat -p [pid] --event major-faults,minor-faults   
+
+4.运行时预加载：  
+```
+object ClassPreloader {
+
+    // 启动阶段需要的关键类列表
+    // 通过 Perfetto/Systrace 分析得出
+    private val criticalClasses = listOf(
+        "com.xxx.home.HomeActivity",
+        "com.xxx.home.HomeViewModel",
+        "com.xxx.home.HomeAdapter",
+        "com.xxx.network.OkHttpManager",
+        "com.xxx.image.GlideManager",
+        "com.xxx.db.AppDatabase"
+    )
+
+    fun preload() {
+        GlobalScope.launch(Dispatchers.IO) {
+            criticalClasses.forEach { className ->
+                try {
+                    // 触发类加载（不实例化）
+                    Class.forName(className)
+                } catch (e: ClassNotFoundException) {
+                    // 类不存在，忽略
+                }
+            }
+        }
+    }
+}
+
+// 更精准的方式：
+// 通过插桩记录线上用户的类加载顺序
+// 生成 criticalClasses 列表
+// 类似 Dex 重排的思路，但这里是运行时预加载
+```
 ## 资源预加载
-### 主题资源/字体/关键图片预加载
-## CPU 升频
+1.图片：  
+```
+object ImagePreloader {
+
+    // 启动阶段需要的关键图片
+    private val startupImages = listOf(
+        R.drawable.home_banner_placeholder,
+        R.drawable.default_avatar,
+        R.drawable.tab_home_selected,
+        R.drawable.tab_home_normal,
+        R.drawable.tab_mine_selected,
+        R.drawable.tab_mine_normal
+    )
+
+    fun preload(context: Context) {
+        // 在子线程预加载，不阻塞主线程
+        GlobalScope.launch(Dispatchers.IO) {
+            startupImages.forEach { resId ->
+                // 方式一：通过 Glide 预加载到内存缓存
+                Glide.with(context)
+                    .load(resId)
+                    .preload() // 加载到缓存，不显示到View
+
+                // 方式二：直接解码到内存（不依赖Glide）
+                // BitmapFactory.decodeResource(context.resources, resId)
+            }
+        }
+    }
+
+    // 网络图片预加载（首屏Banner等）
+    fun preloadNetworkImages(context: Context, urls: List<String>) {
+        GlobalScope.launch(Dispatchers.IO) {
+            urls.forEach { url ->
+                Glide.with(context)
+                    .load(url)
+                    .diskCacheStrategy(DiskCacheStrategy.ALL)
+                    .preload()
+            }
+        }
+    }
+}
+
+// 在 Application.onCreate 中调用
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+
+        // 子线程预加载图片
+        // Splash展示期间完成，进入首页时直接命中缓存
+        ImagePreloader.preload(this)
+    }
+}
+```
+
+2.字体：  
+```
+// 自定义字体首次加载耗时明显（需要解析字体文件）
+// 预加载后，TextView 使用字体时直接命中缓存
+
+object FontPreloader {
+
+    fun preload(context: Context) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                // 方式一：ResourcesCompat 预加载
+                // 内部有缓存，预加载后后续使用直接命中
+                ResourcesCompat.getFont(context, R.font.custom_regular)
+                ResourcesCompat.getFont(context, R.font.custom_bold)
+                ResourcesCompat.getFont(context, R.font.custom_medium)
+
+            } catch (e: Exception) {
+                // 字体加载失败，降级使用系统字体
+                Log.w("FontPreloader", "字体预加载失败: ${e.message}")
+            }
+        }
+    }
+}
+
+// 更好的方式：使用 PrecomputedText 预计算文本布局
+// 适用于首屏有大量固定文本的场景
+object TextPreloader {
+
+    fun precomputeTexts(
+        context: Context,
+        texts: List<String>,
+        textViewParams: PrecomputedTextCompat.Params
+    ): List<PrecomputedTextCompat> {
+        // 在子线程预计算文本布局
+        // 主线程直接使用计算结果，跳过 measure 中的文本测量
+        return texts.map { text ->
+            PrecomputedTextCompat.create(text, textViewParams)
+        }
+    }
+}
+```
+
+3.数据库：  
+```
+// Room 数据库首次 getDatabase() 耗时较长
+// 原因：数据库文件打开 + schema 验证 + migration 检查
+
+object DatabasePreloader {
+
+    @Volatile
+    private var preloadJob: Job? = null
+
+    fun preload(context: Context) {
+        preloadJob = GlobalScope.launch(Dispatchers.IO) {
+            // 触发数据库初始化
+            // 后续真正使用时直接命中已初始化的实例
+            AppDatabase.getInstance(context)
+
+            // 预热关键查询（可选）
+            // 让 SQLite 的页缓存预热
+            AppDatabase.getInstance(context)
+                .userDao()
+                .getCurrentUser()
+        }
+    }
+
+    // 确保预加载完成（在需要使用数据库之前调用）
+    suspend fun awaitPreload() {
+        preloadJob?.join()
+    }
+}
+```
+
+5.SP:  
+```
+// SP 首次 getSharedPreferences 会触发文件 IO
+// 预加载到内存后，后续读取直接命中内存缓存
+
+object SPPreloader {
+
+    // 需要预加载的 SP 文件名列表
+    private val spFiles = listOf(
+        "user_config",
+        "app_settings",
+        "feature_flags"
+    )
+
+    fun preload(context: Context) {
+        // 必须在子线程！避免主线程 IO
+        GlobalScope.launch(Dispatchers.IO) {
+            spFiles.forEach { name ->
+                // 触发 SP 文件读取，加载到内存
+                context.getSharedPreferences(name, Context.MODE_PRIVATE)
+            }
+        }
+    }
+}
+
+// Application 中统一管理预加载
+class MyApplication : Application() {
+
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        // attachBaseContext 阶段就开始预加载 SP
+        // 比 onCreate 更早，争取更多并行时间
+        SPPreloader.preload(base)
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        ImagePreloader.preload(this)
+        FontPreloader.preload(this)
+        DatabasePreloader.preload(this)
+    }
+}
+```
+
+## so加载 
+1.加载耗时：  
+```
+System.loadLibrary("xxx") 内部流程：
+
+① 查找 so 文件路径
+   /data/app/com.xxx/lib/arm64/libxxx.so
+
+② 打开文件，读取 ELF 头
+   验证文件格式、架构匹配
+
+③ mmap 映射到内存
+   将 so 文件映射到进程地址空间
+
+④ 动态链接
+   解析符号表
+   重定位（修正函数地址）
+   处理依赖的其他 so
+
+⑤ 执行 JNI_OnLoad
+   so 的初始化逻辑
+
+耗时分布：
+├── 小型 so（<1MB）：5~20ms
+├── 中型 so（1~5MB）：20~100ms
+└── 大型 so（>5MB，如 Flutter engine）：100~500ms
+```
+
+2.加载优化：  
+```
+// 策略一：按需加载（最重要）
+object SoLoader {
+
+    private val loadedLibs = mutableSetOf<String>()
+
+    fun loadIfNeeded(libName: String) {
+        if (libName !in loadedLibs) {
+            System.loadLibrary(libName)
+            loadedLibs.add(libName)
+        }
+    }
+}
+
+// 策略二：异步预加载（Splash期间）
+object SoPreloader {
+
+    fun preloadAsync(vararg libNames: String) {
+        // so 加载必须在主线程？
+        // 不是！so 加载可以在子线程
+        // 但 JNI_OnLoad 中如果调用了 JNI 函数需要注意线程安全
+        GlobalScope.launch(Dispatchers.IO) {
+            libNames.forEach { name ->
+                try {
+                    System.loadLibrary(name)
+                } catch (e: UnsatisfiedLinkError) {
+                    Log.e("SoPreloader", "加载失败: $name")
+                }
+            }
+        }
+    }
+}
+
+// 策略三：so 合并（减少加载次数）
+// 将多个小 so 合并为一个大 so
+// 减少动态链接次数
+// 通过 CMakeLists.txt 配置：
+// add_library(merged_lib SHARED
+//     lib_a.cpp
+//     lib_b.cpp
+//     lib_c.cpp
+// )
+
+// 策略四：只保留必要的 ABI
+// build.gradle
+android {
+    defaultConfig {
+        ndk {
+            // 只保留 arm64-v8a
+            // 覆盖市面上 95%+ 的设备
+            // 包体积减少约 50%（相比保留全部ABI）
+            abiFilters "arm64-v8a"
+        }
+    }
+}
+```
+## 网络连接
+1.DNS 预解析：  
+```
+// 冷启动后第一个网络请求的耗时：
+// DNS解析（20~200ms）+ TCP握手（20~100ms）+ TLS握手（20~100ms）+ 请求响应
+// 预连接可以消除前三项耗时
+
+object NetworkPreconnect {
+
+    // App 的主要域名
+    private val domains = listOf(
+        "api.example.com",
+        "cdn.example.com",
+        "static.example.com"
+    )
+
+    fun preconnect(context: Context) {
+        GlobalScope.launch(Dispatchers.IO) {
+
+            // 方式一：DNS 预解析
+            // 提前解析域名，缓存 IP
+            domains.forEach { domain ->
+                try {
+                    InetAddress.getAllByName(domain) // 触发DNS解析并缓存
+                } catch (e: Exception) {
+                    // DNS 失败不影响启动
+                }
+            }
+
+            // 方式二：TCP 预连接（OkHttp连接池预热）
+            preWarmOkHttpConnectionPool()
+        }
+    }
+
+    private fun preWarmOkHttpConnectionPool() {
+        // 发起一个轻量级请求，建立连接并放入连接池
+        // 后续真正的业务请求直接复用连接
+        try {
+            val request = Request.Builder()
+                .url("https://api.example.com/ping") // 轻量级ping接口
+                .head() // HEAD请求，无响应体，流量最小
+                .build()
+
+            OkHttpClient.getInstance()
+                .newCall(request)
+                .execute()
+                .close()
+        } catch (e: Exception) {
+            // 预连接失败不影响业务
+        }
+    }
+}
+```
+
+2.接口预请求：  
+```
+// 在 Splash 展示期间，提前请求首页数据
+// 进入首页时数据已经准备好，直接展示
+
+object DataPrefetcher {
+
+    // 预取的数据缓存
+    private var prefetchedHomeData: Deferred<HomeData?>? = null
+
+    fun prefetch(context: Context) {
+        // 使用 async 发起请求，但不等待结果
+        prefetchedHomeData = GlobalScope.async(Dispatchers.IO) {
+            try {
+                ApiService.getInstance().getHomeData()
+            } catch (e: Exception) {
+                null // 预取失败，后续正常请求
+            }
+        }
+    }
+
+    // 首页 ViewModel 中获取预取数据
+    suspend fun getPrefetchedData(): HomeData? {
+        return try {
+            // 如果预取完成，立即返回
+            // 如果还在请求中，等待完成（通常 Splash 时间足够）
+            prefetchedHomeData?.await()
+        } catch (e: Exception) {
+            null
+        } finally {
+            prefetchedHomeData = null // 用完清除
+        }
+    }
+}
+
+// HomeViewModel 中使用
+class HomeViewModel : ViewModel() {
+    fun loadData() {
+        viewModelScope.launch {
+            // 优先使用预取数据
+            val prefetched = DataPrefetcher.getPrefetchedData()
+            if (prefetched != null) {
+                // 直接展示，无需等待网络
+                _uiState.value = UiState.Success(prefetched)
+                return@launch
+            }
+            // 降级：正常请求
+            fetchFromNetwork()
+        }
+    }
+}
+```
+## CPU 调度
+### 升频
 拉高 CPU 频率，绑定大核，约定时间（1s）进行关键初始化。  
-避免启动阶段大量 IO（IO 不受 CPU Boost 影响）
+避免启动阶段大量 IO（IO 不受 CPU Boost 影响）  
+
+```
+// 大核 vs 小核：
+// 现代 ARM 处理器采用 big.LITTLE 架构
+// 大核：高性能，高功耗
+// 小核：低性能，低功耗
+//
+// 启动阶段：希望使用大核加速
+// 厂商通常会在点击图标时短暂提升 CPU 频率（Boost）
+// 开发者可以通过以下方式配合：
+
+object CpuBoostHelper {
+
+    fun requestBoost() {
+        // 方式一：通过厂商 SDK 申请 Boost（需要合作）
+        // 小米：MiuiBoostFramework
+        // 华为：HwBoostFramework
+        // OPPO：OplusBoostFramework
+
+        // 方式二：通过 PowerManager 申请性能模式
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val powerManager = context.getSystemService(PowerManager::class.java)
+            // 申请高性能模式（需要权限）
+            // 仅在启动关键路径上使用，用完立即释放
+        }
+
+        // 方式三：确保在 Boost 窗口内完成关键初始化
+        // 系统 Boost 通常持续 1~2 秒
+        // 关键初始化必须在这个窗口内完成
+    }
+}
+```
 ## GC 抑制
 adb shell logcat | grep "GC_" 查看启动期间 GC 情况  
 ### 启动期间抑制 GC
