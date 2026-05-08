@@ -2798,7 +2798,141 @@ class MyApplication : Application() {
 // 标记自定义慢调用
 StrictMode.noteSlowCall("heavy_computation")
 ```
-### 主线程 IO/网络/锁等待
+### 主线程 IO/锁等待
+1.IO:  
+```
+// ================================
+// 检测：StrictMode（开发阶段）
+// ================================
+StrictMode.setThreadPolicy(
+    StrictMode.ThreadPolicy.Builder()
+        .detectDiskReads()
+        .detectDiskWrites()
+        .detectNetwork()
+        .penaltyLog()
+        .build()
+)
+
+// ================================
+// 常见主线程 IO 场景与优化
+// ================================
+
+// 场景一：主线程读取 SharedPreferences
+// ❌ 问题
+val sp = getSharedPreferences("config", MODE_PRIVATE)
+val value = sp.getString("key", "") // 首次可能触发文件IO
+
+// ✅ 优化：提前异步预加载（见启动优化章节）
+// 或使用 DataStore（基于协程，天然异步）
+val dataStore = context.createDataStore("config")
+lifecycleScope.launch {
+    val value = dataStore.data.map { it[KEY] }.first()
+}
+
+// 场景二：主线程数据库操作
+// ❌ 问题
+val user = db.userDao().getUser(id) // 主线程DB查询！
+
+// ✅ 优化：Room 强制异步（suspend函数）
+lifecycleScope.launch {
+    val user = withContext(Dispatchers.IO) {
+        db.userDao().getUser(id)
+    }
+    updateUI(user)
+}
+
+// 场景三：主线程文件操作
+// ❌ 问题
+val config = File(filesDir, "config.json").readText()
+
+// ✅ 优化
+lifecycleScope.launch {
+    val config = withContext(Dispatchers.IO) {
+        File(filesDir, "config.json").readText()
+    }
+    parseConfig(config)
+}
+```
+
+2.锁等待：  
+```
+// ================================
+// 场景：主线程等待锁
+// ================================
+
+// ❌ 问题：主线程持有/等待锁
+class DataManager {
+    private val lock = Object()
+    private var cachedData: Data? = null
+
+    // 子线程持有锁做耗时操作
+    fun updateDataInBackground() {
+        thread {
+            synchronized(lock) {
+                Thread.sleep(500) // 耗时操作持有锁
+                cachedData = fetchNewData()
+            }
+        }
+    }
+
+    // 主线程等待同一把锁 → 主线程阻塞500ms！
+    fun getDataOnMainThread(): Data? {
+        synchronized(lock) { // 等待子线程释放锁
+            return cachedData
+        }
+    }
+}
+
+// ✅ 优化方案一：读写分离（CopyOnWrite）
+class DataManagerV2 {
+
+    // volatile 保证可见性，无需锁
+    @Volatile
+    private var cachedData: Data? = null
+
+    fun updateDataInBackground() {
+        thread {
+            val newData = fetchNewData() // 耗时操作不持锁
+            cachedData = newData         // 原子赋值，volatile保证可见性
+        }
+    }
+
+    fun getDataOnMainThread(): Data? {
+        return cachedData // 直接读，无锁
+    }
+}
+
+// ✅ 优化方案二：无锁数据结构
+class DataManagerV3 {
+    // AtomicReference：无锁线程安全
+    private val dataRef = AtomicReference<Data?>(null)
+
+    fun updateDataInBackground() {
+        thread {
+            val newData = fetchNewData()
+            dataRef.set(newData) // 原子操作，无锁
+        }
+    }
+
+    fun getDataOnMainThread(): Data? {
+        return dataRef.get() // 原子读，无锁
+    }
+}
+
+// ✅ 优化方案三：主线程不等待，用回调
+class DataManagerV4 {
+    private val executor = Executors.newSingleThreadExecutor()
+
+    fun getDataAsync(callback: (Data?) -> Unit) {
+        executor.execute {
+            val data = fetchData() // 子线程执行
+            Handler(Looper.getMainLooper()).post {
+                callback(data) // 回调到主线程
+            }
+        }
+    }
+}
+```
 ## 卡顿监控	
 ### Looper 消息监控
 ```
@@ -2940,6 +3074,142 @@ class FrameMetricsMonitor(private val activity: Activity) {
 }
 ```
 ### WatchDog 机制
+思路：  
+```
+开启一个子线程，定期向主线程发送任务
+如果任务在规定时间内没有被执行
+→ 说明主线程被阻塞了 → 卡顿！
+
+时序：
+子线程：[发送任务] ----等待N毫秒----> [检查是否执行]
+主线程：[正常处理消息]...[处理WatchDog任务]
+                              ↑
+                    如果这里超时 = 卡顿
+```
+
+实现：  
+```
+class WatchDog(
+    private val threshold: Long = 3000L, // 卡顿阈值（ms）
+    private val checkInterval: Long = 1000L // 检查间隔（ms）
+) {
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    @Volatile
+    private var tickCount = 0L  // 主线程执行计数
+
+    @Volatile
+    private var lastTickCount = 0L // 上次检查时的计数
+
+    @Volatile
+    private var blockStartTime = 0L // 阻塞开始时间
+
+    private var isRunning = false
+    private var watchThread: Thread? = null
+
+    // 主线程任务：每次执行都更新 tickCount
+    private val tickRunnable = Runnable {
+        tickCount++
+    }
+
+    fun start() {
+        isRunning = true
+
+        // 定期向主线程 post 任务
+        mainHandler.post(tickRunnable)
+
+        watchThread = thread(name = "watchdog") {
+            while (isRunning) {
+                Thread.sleep(checkInterval)
+
+                // 检查主线程是否执行了任务
+                if (tickCount == lastTickCount) {
+                    // 主线程没有执行 tickRunnable
+                    // 说明主线程被阻塞了
+
+                    if (blockStartTime == 0L) {
+                        blockStartTime = SystemClock.elapsedRealtime()
+                    }
+
+                    val blockDuration = SystemClock.elapsedRealtime() - blockStartTime
+
+                    if (blockDuration >= threshold) {
+                        // 超过阈值，上报卡顿
+                        reportBlock(blockDuration)
+                    }
+                } else {
+                    // 主线程正常执行
+                    blockStartTime = 0L
+                    lastTickCount = tickCount
+
+                    // 继续 post 下一个 tick
+                    mainHandler.post(tickRunnable)
+                }
+            }
+        }
+    }
+
+    private fun reportBlock(blockDuration: Long) {
+        // 采集主线程堆栈
+        val mainThread = Looper.getMainLooper().thread
+        val stackTrace = mainThread.stackTrace
+            .joinToString("\n") { "\tat $it" }
+
+        // 采集所有线程堆栈（更全面的信息）
+        val allThreadStacks = Thread.getAllStackTraces()
+            .entries
+            .joinToString("\n\n") { (thread, stack) ->
+                "Thread: ${thread.name} (${thread.state})\n" +
+                stack.joinToString("\n") { "\tat $it" }
+            }
+
+        Log.e("WatchDog",
+            "主线程卡顿 ${blockDuration}ms\n" +
+            "主线程堆栈：\n$stackTrace"
+        )
+
+        // 上报到 APM
+        BlockReporter.report(
+            blockDurationMs = blockDuration,
+            mainThreadStack = stackTrace,
+            allThreadStacks = allThreadStacks
+        )
+    }
+
+    fun stop() {
+        isRunning = false
+        mainHandler.removeCallbacks(tickRunnable)
+        watchThread?.interrupt()
+    }
+}
+
+// 使用
+class MyApplication : Application() {
+    private val watchDog = WatchDog(threshold = 3000L)
+
+    override fun onCreate() {
+        super.onCreate()
+        if (!BuildConfig.DEBUG) { // 线上开启
+            watchDog.start()
+        }
+    }
+}
+```
+
+WatchDog vs Looper Printer:  
+```
+┌──────────────────┬─────────────────┬──────────────────┐
+│                  │ Looper Printer  │ WatchDog         │
+├──────────────────┼─────────────────┼──────────────────┤
+│ 检测原理         │ 消息处理前后回调 │ 定时检测心跳      │
+│ 精准度           │ 高（每条消息）  │ 中（有检测间隔）  │
+│ 性能开销         │ 低              │ 极低             │
+│ 能否检测死锁     │ 否              │ 能               │
+│ 堆栈采集时机     │ 消息结束时      │ 阻塞期间随时      │
+│ 适用场景         │ 开发/测试       │ 线上             │
+└──────────────────┴─────────────────┴──────────────────┘
+```
 ## Binder
 ### 冷启 Binder 耗时
 1.异步预加载 SP：主线程读取 SP，可能触发 Binder 到 system_server：
@@ -4371,6 +4641,135 @@ VSync信号：屏幕每次刷新前发出的同步信号
 
 任何一个环节超时 → 丢帧（Jank）
 连续丢帧 → 用户感知到卡顿
+
+严重程度分级：
+├── Jank：丢1帧（16ms~32ms）
+├── Serious Jank：丢2帧以上（32ms~700ms）
+└── Frozen Frame：冻帧（>700ms，接近ANR）
+```
+
+FrameMetrics:  
+```
+// FrameMetrics 提供每帧各阶段的精确耗时
+// Android 7.0+
+
+class JankyFrameAnalyzer(private val activity: Activity) {
+
+    data class FrameDetail(
+        val totalMs: Long,
+        val inputMs: Long,        // 输入事件处理
+        val animationMs: Long,    // 动画计算
+        val layoutMeasureMs: Long,// measure + layout
+        val drawMs: Long,         // draw（构建DisplayList）
+        val syncMs: Long,         // 主线程→RenderThread同步
+        val commandMs: Long,      // RenderThread执行命令
+        val gpuMs: Long,          // GPU渲染
+        val swapMs: Long,         // 缓冲区交换
+        val isJanky: Boolean
+    )
+
+    private val frameDetails = mutableListOf<FrameDetail>()
+
+    private val listener = Window.OnFrameMetricsAvailableListener {
+        _, metrics, _ ->
+
+        val total = metrics.getMetric(FrameMetrics.TOTAL_DURATION) / 1_000_000
+        val input = metrics.getMetric(FrameMetrics.INPUT_HANDLING_DURATION) / 1_000_000
+        val animation = metrics.getMetric(FrameMetrics.ANIMATION_DURATION) / 1_000_000
+        val layoutMeasure = metrics.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION) / 1_000_000
+        val draw = metrics.getMetric(FrameMetrics.DRAW_DURATION) / 1_000_000
+        val sync = metrics.getMetric(FrameMetrics.SYNC_DURATION) / 1_000_000
+        val command = metrics.getMetric(FrameMetrics.COMMAND_ISSUE_DURATION) / 1_000_000
+        val gpu = metrics.getMetric(FrameMetrics.GPU_DURATION) / 1_000_000
+        val swap = metrics.getMetric(FrameMetrics.SWAP_BUFFERS_DURATION) / 1_000_000
+        val isJanky = metrics.getMetric(FrameMetrics.FIRST_DRAW_FRAME) == 0L
+
+        val detail = FrameDetail(
+            total, input, animation, layoutMeasure,
+            draw, sync, command, gpu, swap, total > 16
+        )
+
+        if (detail.isJanky) {
+            analyzeJankCause(detail)
+            frameDetails.add(detail)
+        }
+    }
+
+    // 根据各阶段耗时分析卡顿原因
+    private fun analyzeJankCause(frame: FrameDetail) {
+        val cause = when {
+            frame.inputMs > 8 ->
+                "输入事件处理过慢（${frame.inputMs}ms）：onTouchEvent耗时"
+
+            frame.layoutMeasureMs > 8 ->
+                "measure/layout过慢（${frame.layoutMeasureMs}ms）：布局层级过深或复杂约束"
+
+            frame.drawMs > 8 ->
+                "draw过慢（${frame.drawMs}ms）：onDraw耗时，可能有对象创建或复杂绘制"
+
+            frame.syncMs > 4 ->
+                "主线程同步RenderThread过慢（${frame.syncMs}ms）：可能有大Bitmap上传GPU"
+
+            frame.gpuMs > 8 ->
+                "GPU渲染过慢（${frame.gpuMs}ms）：过度绘制或复杂shader"
+
+            frame.commandMs > 8 ->
+                "RenderThread执行命令过慢（${frame.commandMs}ms）：DisplayList过于复杂"
+
+            else ->
+                "综合耗时（total=${frame.totalMs}ms）"
+        }
+
+        Log.w("JankyFrame", "卡顿原因：$cause")
+        reportJankCause(cause, frame)
+    }
+
+    fun start() {
+        activity.window.addOnFrameMetricsAvailableListener(
+            listener, Handler(Looper.getMainLooper())
+        )
+    }
+
+    // 生成卡顿报告
+    fun generateReport(): JankReport {
+        val jankyFrames = frameDetails.filter { it.isJanky }
+        return JankReport(
+            totalFrames = frameDetails.size,
+            jankyFrames = jankyFrames.size,
+            jankyRate = jankyFrames.size.toFloat() / frameDetails.size,
+            avgLayoutMs = jankyFrames.map { it.layoutMeasureMs }.average(),
+            avgDrawMs = jankyFrames.map { it.drawMs }.average(),
+            avgGpuMs = jankyFrames.map { it.gpuMs }.average(),
+            worstFrameMs = jankyFrames.maxOfOrNull { it.totalMs } ?: 0
+        )
+    }
+}
+```
+
+adb:  
+```
+# 获取帧率统计
+adb shell dumpsys gfxinfo com.xxx.app
+
+# 输出关键部分：
+# Stats since: 123456789ns
+# Total frames rendered: 1200
+# Janky frames: 45 (3.75%)       ← 卡顿帧数和比例
+# 50th percentile: 8ms
+# 90th percentile: 16ms
+# 95th percentile: 24ms          ← 5%的帧超过24ms
+# 99th percentile: 48ms          ← 1%的帧超过48ms
+# Number Missed Vsync: 12        ← 错过VSync次数
+# Number High input latency: 8   ← 输入延迟次数
+# Number Slow UI thread: 23      ← 主线程慢次数
+# Number Slow bitmap uploads: 3  ← Bitmap上传GPU慢
+# Number Slow issue draw commands: 5 ← 绘制命令慢
+
+# 重置统计
+adb shell dumpsys gfxinfo com.xxx.app reset
+
+# 获取详细帧数据（每帧各阶段耗时）
+adb shell dumpsys gfxinfo com.xxx.app framestats
 ```
 ## 布局优化
 setContentView → XML 解析 → 反射创建 View → 耗时
@@ -4648,6 +5047,117 @@ class OptimizedCardView(context: Context) : View(context) {
 }
 ```
 ### quickReject
+原理：  
+```
+quickReject：Canvas 的快速裁剪判断
+在真正绘制之前，先判断要绘制的区域是否在
+当前裁剪区域（clip region）内
+
+如果完全在裁剪区域外 → 直接跳过绘制
+不需要执行实际的绘制操作
+
+作用：
+├── 跳过不可见区域的绘制
+├── 减少 GPU 绘制指令
+└── 降低 DisplayList 复杂度
+```
+
+使用：  
+```
+class OptimizedView(context: Context) : View(context) {
+
+    private val items = mutableListOf<DrawItem>()
+    private val paint = Paint()
+    private val rectF = RectF()
+
+    override fun onDraw(canvas: Canvas) {
+        items.forEach { item ->
+
+            // ================================
+            // quickReject：绘制前先判断是否可见
+            // ================================
+            rectF.set(item.left, item.top, item.right, item.bottom)
+
+            // canvas.quickReject 返回 true = 不可见，跳过
+            // 返回 false = 可能可见，继续绘制
+            if (canvas.quickReject(rectF, Canvas.EdgeType.BW)) {
+                return@forEach // 跳过这个item的绘制
+            }
+
+            // 通过 quickReject 检查，执行实际绘制
+            drawItem(canvas, item)
+        }
+    }
+
+    // 自定义 ViewGroup 中优化子 View 绘制
+    override fun dispatchDraw(canvas: Canvas) {
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+
+            // 判断子 View 是否在可见区域内
+            val childRect = RectF(
+                child.left.toFloat(),
+                child.top.toFloat(),
+                child.right.toFloat(),
+                child.bottom.toFloat()
+            )
+
+            if (!canvas.quickReject(childRect, Canvas.EdgeType.BW)) {
+                // 子 View 可见，才绘制
+                drawChild(canvas, child, drawingTime)
+            }
+            // 不可见的子 View 直接跳过
+        }
+    }
+}
+```
+
+RV:  
+```
+// RecyclerView 的 ItemDecoration 中使用 quickReject
+class OptimizedDividerDecoration : RecyclerView.ItemDecoration() {
+
+    private val paint = Paint().apply {
+        color = Color.LTGRAY
+        strokeWidth = 1f
+    }
+
+    override fun onDraw(canvas: Canvas, parent: RecyclerView, state: RecyclerView.State) {
+        val left = parent.paddingLeft.toFloat()
+        val right = (parent.width - parent.paddingRight).toFloat()
+
+        for (i in 0 until parent.childCount) {
+            val child = parent.getChildAt(i)
+            val top = child.bottom.toFloat()
+            val bottom = top + 1f
+
+            // quickReject 判断分割线是否在可见区域
+            if (!canvas.quickReject(left, top, right, bottom, Canvas.EdgeType.BW)) {
+                canvas.drawLine(left, top, right, top, paint)
+            }
+        }
+    }
+}
+```
+
+硬件加速:  
+```
+注意：硬件加速开启时，quickReject 行为有变化
+
+软件渲染：
+quickReject 精确判断裁剪区域
+完全在裁剪区域外 → 返回 true
+
+硬件加速：
+quickReject 判断的是 View 的绘制边界
+不是精确的像素级裁剪
+但仍然有效，可以跳过明显不可见的绘制
+
+建议：
+├── 自定义 View 的 onDraw 中使用 quickReject
+├── 复杂 ViewGroup 的 dispatchDraw 中使用
+└── 有大量子元素的自定义布局中使用
+```
 ## 列表优化
 ### RecyclerView 
 #### 四级缓存
@@ -4840,8 +5350,333 @@ class OuterAdapter(
     }
 }
 ```
-### ItemAnimator 优化
+#### ItemAnimator 优化
+问题：  
+```
+RecyclerView 默认使用 DefaultItemAnimator
+├── 每次 notifyItemChanged 触发淡入淡出动画
+├── 动画期间 ViewHolder 被占用，无法复用
+├── 大量数据更新时：动画堆积 → 卡顿
+└── 某些场景动画完全不需要（如后台静默更新）
+```
+
+优化：  
+// ================================
+// 方案一：禁用动画（数据频繁更新场景）
+// ================================
+recyclerView.itemAnimator = null
+// 完全禁用，notifyItemChanged 直接刷新，无动画
+// 适用：股票行情、实时数据等高频更新场景
+
+// ================================
+// 方案二：禁用特定动画
+// ================================
+(recyclerView.itemAnimator as? SimpleItemAnimator)
+    ?.supportsChangeAnimations = false
+// 只禁用 change 动画（notifyItemChanged触发的）
+// 保留 add/remove 动画
+// 适用：列表数据更新但不需要闪烁效果
+
+// ================================
+// 方案三：自定义轻量 ItemAnimator
+// ================================
+class LightItemAnimator : DefaultItemAnimator() {
+
+    override fun animateChange(
+        oldHolder: RecyclerView.ViewHolder,
+        newHolder: RecyclerView.ViewHolder,
+        preInfo: ItemHolderInfo,
+        postInfo: ItemHolderInfo
+    ): Boolean {
+        // 直接完成，不播放动画
+        // 但通知框架动画已结束（必须调用！）
+        dispatchChangeFinished(oldHolder, true)
+        if (oldHolder !== newHolder) {
+            dispatchChangeFinished(newHolder, false)
+        }
+        return false // false = 不需要runPendingAnimations
+    }
+
+    // 缩短动画时长
+    init {
+        addDuration = 120   // 默认250ms
+        removeDuration = 120
+        moveDuration = 120
+        changeDuration = 0  // change动画直接0ms
+    }
+}
+
+recyclerView.itemAnimator = LightItemAnimator()
+
+// ================================
+// 方案四：Payload 局部更新避免动画
+// ================================
+// 使用 payload 更新时，DefaultItemAnimator
+// 会跳过 change 动画，直接刷新变化的部分
+
+adapter.notifyItemChanged(position, "price_changed") // 带payload
+
+// Adapter 中处理
+override fun onBindViewHolder(
+    holder: ViewHolder,
+    position: Int,
+    payloads: List<Any>
+) {
+    if (payloads.isEmpty()) {
+        // 完整绑定
+        bind(holder, getItem(position))
+    } else {
+        // 局部更新，无动画
+        payloads.forEach { payload ->
+            if (payload == "price_changed") {
+                holder.updatePrice(getItem(position).price)
+            }
+        }
+    }
+}
 ### Paging3
+核心架构：  
+```
+三层架构：
+┌─────────────────────────────────────┐
+│  UI 层                               │
+│  PagingDataAdapter                  │
+│  └── 自动处理加载状态/错误/重试       │
+├─────────────────────────────────────┤
+│  ViewModel 层                        │
+│  Pager → Flow<PagingData>           │
+│  └── 管理分页数据流                  │
+├─────────────────────────────────────┤
+│  数据层                              │
+│  PagingSource                       │
+│  └── 定义如何加载数据（网络/数据库）  │
+│  RemoteMediator（可选）              │
+│  └── 网络+数据库组合                 │
+└─────────────────────────────────────┘
+```
+
+完整实现：  
+```
+// ================================
+// Step1：PagingSource（数据来源）
+// ================================
+class ArticlePagingSource(
+    private val api: ArticleApi,
+    private val query: String
+) : PagingSource<Int, Article>() {
+
+    override suspend fun load(params: LoadParams<Int>): LoadResult<Int, Article> {
+        val page = params.key ?: 1 // 默认第一页
+
+        return try {
+            val response = api.getArticles(
+                query = query,
+                page = page,
+                pageSize = params.loadSize // Paging3自动管理loadSize
+            )
+
+            LoadResult.Page(
+                data = response.articles,
+                prevKey = if (page == 1) null else page - 1,
+                nextKey = if (response.articles.isEmpty()) null else page + 1
+            )
+        } catch (e: Exception) {
+            LoadResult.Error(e) // 自动触发错误状态
+        }
+    }
+
+    // 刷新时从哪一页开始（支持恢复滚动位置）
+    override fun getRefreshKey(state: PagingState<Int, Article>): Int? {
+        return state.anchorPosition?.let { anchor ->
+            state.closestPageToPosition(anchor)?.prevKey?.plus(1)
+                ?: state.closestPageToPosition(anchor)?.nextKey?.minus(1)
+        }
+    }
+}
+
+// ================================
+// Step2：ViewModel
+// ================================
+class ArticleViewModel(private val api: ArticleApi) : ViewModel() {
+
+    private val currentQuery = MutableStateFlow("Android")
+
+    val articles: Flow<PagingData<Article>> = currentQuery
+        .flatMapLatest { query ->
+            Pager(
+                config = PagingConfig(
+                    pageSize = 20,           // 每页数量
+                    prefetchDistance = 5,    // 距底部5条时预加载
+                    enablePlaceholders = false, // 是否显示占位符
+                    initialLoadSize = 40     // 首次加载数量（通常2倍pageSize）
+                ),
+                pagingSourceFactory = {
+                    ArticlePagingSource(api, query)
+                }
+            ).flow
+        }
+        .cachedIn(viewModelScope) // 缓存在ViewModel，旋转屏幕不重新加载
+}
+
+// ================================
+// Step3：Adapter
+// ================================
+class ArticleAdapter : PagingDataAdapter<Article, ArticleViewHolder>(
+    ArticleDiffCallback()
+) {
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int)
+        : ArticleViewHolder {
+        return ArticleViewHolder(
+            LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_article, parent, false)
+        )
+    }
+
+    override fun onBindViewHolder(holder: ArticleViewHolder, position: Int) {
+        getItem(position)?.let { holder.bind(it) }
+        // getItem 可能返回 null（enablePlaceholders=true时）
+    }
+}
+
+class ArticleDiffCallback : DiffUtil.ItemCallback<Article>() {
+    override fun areItemsTheSame(old: Article, new: Article) =
+        old.id == new.id
+    override fun areContentsTheSame(old: Article, new: Article) =
+        old == new
+}
+
+// ================================
+// Step4：加载状态处理
+// ================================
+class ArticleFragment : Fragment() {
+
+    private val viewModel: ArticleViewModel by viewModels()
+    private val adapter = ArticleAdapter()
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        // 添加加载状态 Footer
+        recyclerView.adapter = adapter.withLoadStateFooter(
+            footer = LoadStateAdapter { adapter.retry() }
+        )
+
+        // 观察加载状态
+        lifecycleScope.launch {
+            adapter.loadStateFlow.collect { loadState ->
+                // 首次加载
+                progressBar.isVisible =
+                    loadState.refresh is LoadState.Loading
+
+                // 首次加载错误
+                errorView.isVisible =
+                    loadState.refresh is LoadState.Error
+
+                // 显示错误信息
+                (loadState.refresh as? LoadState.Error)?.let {
+                    errorText.text = it.error.message
+                }
+            }
+        }
+
+        // 收集分页数据
+        lifecycleScope.launch {
+            viewModel.articles.collectLatest { pagingData ->
+                adapter.submitData(pagingData)
+            }
+        }
+    }
+}
+
+// ================================
+// LoadState Footer Adapter
+// ================================
+class LoadStateAdapter(
+    private val retry: () -> Unit
+) : LoadStateAdapter<LoadStateViewHolder>() {
+
+    override fun onCreateViewHolder(parent: ViewGroup, loadState: LoadState)
+        : LoadStateViewHolder {
+        return LoadStateViewHolder(
+            LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_load_state, parent, false),
+            retry
+        )
+    }
+
+    override fun onBindViewHolder(holder: LoadStateViewHolder, loadState: LoadState) {
+        holder.bind(loadState)
+    }
+}
+
+class LoadStateViewHolder(view: View, retry: () -> Unit)
+    : RecyclerView.ViewHolder(view) {
+
+    private val progressBar = view.findViewById<ProgressBar>(R.id.progress)
+    private val retryButton = view.findViewById<Button>(R.id.retry)
+    private val errorText = view.findViewById<TextView>(R.id.error_msg)
+
+    init {
+        retryButton.setOnClickListener { retry() }
+    }
+
+    fun bind(loadState: LoadState) {
+        progressBar.isVisible = loadState is LoadState.Loading
+        retryButton.isVisible = loadState is LoadState.Error
+        errorText.isVisible = loadState is LoadState.Error
+        (loadState as? LoadState.Error)?.let {
+            errorText.text = it.error.message
+        }
+    }
+}
+```
+
+Paging3 + Room（RemoteMediator):  
+```
+// 网络数据缓存到本地，离线可用
+@OptIn(ExperimentalPagingApi::class)
+class ArticleRemoteMediator(
+    private val api: ArticleApi,
+    private val db: AppDatabase
+) : RemoteMediator<Int, Article>() {
+
+    override suspend fun load(
+        loadType: LoadType,
+        state: PagingState<Int, Article>
+    ): MediatorResult {
+
+        val page = when (loadType) {
+            LoadType.REFRESH -> 1  // 刷新从第一页开始
+            LoadType.PREPEND -> return MediatorResult.Success(
+                endOfPaginationReached = true // 不支持向上加载
+            )
+            LoadType.APPEND -> {
+                // 计算下一页页码
+                val lastItem = state.lastItemOrNull()
+                    ?: return MediatorResult.Success(
+                        endOfPaginationReached = true
+                    )
+                getNextPageForItem(lastItem)
+            }
+        }
+
+        return try {
+            val response = api.getArticles(page = page, pageSize = state.config.pageSize)
+
+            db.withTransaction {
+                if (loadType == LoadType.REFRESH) {
+                    db.articleDao().clearAll() // 刷新时清空旧数据
+                }
+                db.articleDao().insertAll(response.articles)
+            }
+
+            MediatorResult.Success(
+                endOfPaginationReached = response.articles.isEmpty()
+            )
+        } catch (e: Exception) {
+            MediatorResult.Error(e)
+        }
+    }
+}
+```
 ## 自定义 View
 ### onDraw
 ```
@@ -4926,10 +5761,363 @@ class AnimatedView(context: Context) : View(context) {
 ```
 ## RenderThread
 ### 减少 DisplayList 构建耗时
+```
+DisplayList：View.draw() 生成的渲染指令列表
+主线程：执行 View.draw() → 生成 DisplayList
+RenderThread：执行 DisplayList 中的指令 → 提交GPU
+
+DisplayList 耗时来源：
+├── onDraw 中复杂的 Canvas 操作
+├── 大量 View 的 draw 递归调用
+├── 频繁 invalidate 导致 DisplayList 重建
+└── 大 Bitmap 上传 GPU（sync阶段）
+```
+
+优化：  
+```
+// ================================
+// 优化一：减少 invalidate 范围
+// ================================
+class ChartView(context: Context) : View(context) {
+
+    private var highlightIndex = -1
+
+    fun highlightItem(index: Int) {
+        val oldIndex = highlightIndex
+        highlightIndex = index
+
+        // ❌ 全局 invalidate：整个 View 重建 DisplayList
+        // invalidate()
+
+        // ✅ 局部 invalidate：只重建变化区域的 DisplayList
+        // 计算旧高亮区域
+        if (oldIndex >= 0) {
+            val oldRect = getItemRect(oldIndex)
+            invalidate(oldRect) // 只刷新旧区域
+        }
+        // 计算新高亮区域
+        val newRect = getItemRect(index)
+        invalidate(newRect) // 只刷新新区域
+    }
+
+    private fun getItemRect(index: Int): Rect {
+        val itemWidth = width / itemCount
+        return Rect(
+            index * itemWidth, 0,
+            (index + 1) * itemWidth, height
+        )
+    }
+}
+
+// ================================
+// 优化二：View Layer 缓存 DisplayList
+// ================================
+// 场景：View 内容不变，只做位移/缩放/透明度变化
+// 使用 Hardware Layer 缓存 DisplayList 为 GPU 纹理
+// 动画时直接操作纹理，不重建 DisplayList
+
+class AnimatedCardView(context: Context) : View(context) {
+
+    fun startSlideAnimation() {
+        // 缓存为 GPU 纹理
+        setLayerType(LAYER_TYPE_HARDWARE, null)
+
+        animate()
+            .translationX(200f)
+            .setDuration(300)
+            .withEndAction {
+                // 动画结束释放纹理
+                setLayerType(LAYER_TYPE_NONE, null)
+            }
+            .start()
+        // 动画过程中 DisplayList 不重建
+        // 直接操作 GPU 纹理，极低开销
+    }
+}
+
+// ================================
+// 优化三：避免大 Bitmap 频繁上传 GPU
+// ================================
+// sync 阶段：主线程将新的 Bitmap 上传到 GPU 纹理
+// 大 Bitmap 上传耗时 = sync 阶段卡顿
+
+class ImageManager {
+
+    // ❌ 问题：每次都创建新 Bitmap，每次都上传 GPU
+    fun updateImage(view: ImageView, newBitmap: Bitmap) {
+        view.setImageBitmap(newBitmap) // 触发 GPU 上传
+    }
+
+    // ✅ 优化：复用 Bitmap（使用 inBitmap）
+    fun updateImageWithReuse(view: ImageView, imageUrl: String) {
+        Glide.with(view)
+            .load(imageUrl)
+            // Glide 内部复用 Bitmap，减少 GPU 上传
+            .into(view)
+    }
+
+    // ✅ 优化：降低 Bitmap 分辨率
+    fun loadScaledBitmap(context: Context, resId: Int, targetWidth: Int): Bitmap {
+        val options = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+            BitmapFactory.decodeResource(context.resources, resId, this)
+
+            // 计算采样率
+            inSampleSize = calculateInSampleSize(this, targetWidth)
+            inJustDecodeBounds = false
+            inPreferredConfig = Bitmap.Config.RGB_565 // 减少内存占用
+        }
+        return BitmapFactory.decodeResource(context.resources, resId, options)
+    }
+}
+```
 ### 属性动画优化
+问题：  
+```
+属性动画（ObjectAnimator/ValueAnimator）：
+每一帧：
+① Choreographer 回调
+② 计算当前动画值（插值器计算）
+③ 调用 setter（如 setTranslationX）
+④ 触发 invalidate
+⑤ 重建 DisplayList
+⑥ RenderThread 渲染
+
+├── 每帧都在主线程执行 ①②③④
+├── 复杂动画 = 每帧主线程耗时增加
+└── 多个动画同时运行 = 主线程压力倍增
+```
+
+优化：  
+```
+// ================================
+// 优化一：使用 RenderThread 动画
+// ViewPropertyAnimator 部分操作在 RenderThread 执行
+// ================================
+
+// ❌ ObjectAnimator：完全在主线程
+ObjectAnimator.ofFloat(view, "translationX", 0f, 200f).start()
+
+// ✅ ViewPropertyAnimator：translationX/Y/Z、rotation、
+//    scaleX/Y、alpha 等变换在 RenderThread 执行
+//    不占用主线程！
+view.animate()
+    .translationX(200f)
+    .alpha(0.5f)
+    .rotation(45f)
+    .setDuration(300)
+    .start()
+
+// ================================
+// 优化二：使用 Animator 而非 Animation
+// ================================
+// Animation（补间动画）：只改变绘制位置，不改变实际属性
+//   → 点击区域不跟着移动，有歧义
+//   → 性能和 Animator 差不多，但功能受限
+
+// Animator（属性动画）：真正改变 View 属性
+//   → 推荐使用
+
+// ================================
+// 优化三：减少动画对象创建
+// ================================
+class AnimationHelper {
+
+    // ❌ 每次动画都创建新的 ObjectAnimator
+    fun startBadAnimation(view: View) {
+        ObjectAnimator.ofFloat(view, "alpha", 0f, 1f)
+            .setDuration(300)
+            .start()
+    }
+
+    // ✅ 复用 ObjectAnimator
+    private val alphaAnimator = ObjectAnimator.ofFloat(
+        null, "alpha", 0f, 1f
+    ).apply {
+        duration = 300
+    }
+
+    fun startGoodAnimation(view: View) {
+        alphaAnimator.target = view
+        alphaAnimator.start()
+    }
+}
+
+// ================================
+// 优化四：AnimatorSet 替代多个独立动画
+// ================================
+// ❌ 多个独立动画：各自触发 invalidate
+view1.animate().alpha(0f).start()
+view2.animate().translationY(100f).start()
+view3.animate().scaleX(0.8f).start()
+
+// ✅ AnimatorSet：协调多个动画，减少重绘
+AnimatorSet().apply {
+    playTogether(
+        ObjectAnimator.ofFloat(view1, "alpha", 0f),
+        ObjectAnimator.ofFloat(view2, "translationY", 100f),
+        ObjectAnimator.ofFloat(view3, "scaleX", 0.8f)
+    )
+    duration = 300
+    start()
+}
+
+// ================================
+// 优化五：插值器选择
+// ================================
+// 复杂插值器（如 BounceInterpolator）每帧计算量大
+// 简单动画用 LinearInterpolator 或 AccelerateDecelerateInterpolator
+ObjectAnimator.ofFloat(view, "translationX", 200f).apply {
+    interpolator = LinearInterpolator() // 最简单，计算量最小
+    duration = 200
+    start()
+}
+```
 ## 窗口动画
 ### 共享元素动画
-### 过渡动画优化
+原理：  
+```
+共享元素动画（Shared Element Transition）：
+两个 Activity/Fragment 之间，某个 View 看起来
+从一个位置"飞"到另一个位置
+
+① 记录起始 View 的位置、大小、外观
+② 在目标 Activity/Fragment 中找到对应 View
+③ 创建过渡动画：从起始状态变化到目标状态
+④ 动画期间：View 在 DecorView 上层绘制（覆盖两个界面）
+```
+
+实现：  
+```
+// ================================
+// 基础实现
+// ================================
+
+// 列表页
+class ArticleListActivity : AppCompatActivity() {
+
+    fun onItemClick(article: Article, imageView: ImageView) {
+        val intent = Intent(this, ArticleDetailActivity::class.java)
+        intent.putExtra("article", article)
+
+        // 定义共享元素
+        val options = ActivityOptionsCompat.makeSceneTransitionAnimation(
+            this,
+            imageView,                    // 共享的 View
+            "article_image"              // transitionName（必须唯一）
+        )
+        startActivity(intent, options.toBundle())
+    }
+}
+
+// 列表 item 布局
+// <ImageView
+//     android:transitionName="article_image_${article.id}"
+//     .../>
+
+// 详情页
+class ArticleDetailActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // 延迟过渡动画，等数据加载完成
+        postponeEnterTransition()
+
+        setContentView(R.layout.activity_detail)
+
+        // 设置相同的 transitionName
+        detailImageView.transitionName = "article_image"
+
+        // 图片加载完成后开始动画
+        Glide.with(this)
+            .load(article.imageUrl)
+            .listener(object : RequestListener<Drawable> {
+                override fun onResourceReady(...): Boolean {
+                    // 图片加载完成，开始过渡动画
+                    startPostponedEnterTransition()
+                    return false
+                }
+                override fun onLoadFailed(...): Boolean {
+                    startPostponedEnterTransition() // 失败也要开始，否则卡住
+                    return false
+                }
+            })
+            .into(detailImageView)
+    }
+}
+```
+
+优化：  
+```
+// ================================
+// 优化一：postponeEnterTransition 防止动画错位
+// ================================
+// 问题：图片未加载完就开始动画 → 动画结束后图片才出现
+// 解决：postponeEnterTransition 延迟动画
+
+// ================================
+// 优化二：减少共享元素数量
+// ================================
+// 每个共享元素都需要截图和动画计算
+// 共享元素越多，性能开销越大
+// 建议：最多 2~3 个共享元素
+
+// ================================
+// 优化三：自定义过渡动画
+// ================================
+class DetailActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // 自定义共享元素过渡
+        window.sharedElementEnterTransition = buildEnterTransition()
+        window.sharedElementReturnTransition = buildReturnTransition()
+    }
+
+    private fun buildEnterTransition(): Transition {
+        return TransitionSet().apply {
+            // 组合多种过渡效果
+            addTransition(ChangeBounds())    // 位置和大小变化
+            addTransition(ChangeImageTransform()) // ImageView的ScaleType变化
+            addTransition(ChangeClipBounds())    // 裁剪边界变化
+            duration = 300
+            interpolator = FastOutSlowInInterpolator()
+        }
+    }
+
+    private fun buildReturnTransition(): Transition {
+        return TransitionSet().apply {
+            addTransition(ChangeBounds())
+            addTransition(ChangeImageTransform())
+            duration = 250 // 返回动画稍快
+            interpolator = FastOutLinearInInterpolator()
+        }
+    }
+}
+
+// ================================
+// 优化四：Fragment 共享元素（更流畅）
+// ================================
+// Activity 间共享元素：需要跨进程通信，有额外开销
+// Fragment 间共享元素：在同一个 Activity 内，更流畅
+
+class ListFragment : Fragment() {
+    fun navigateToDetail(item: Item, sharedView: View) {
+        val detailFragment = DetailFragment.newInstance(item.id)
+
+        // 设置共享元素过渡
+        detailFragment.sharedElementEnterTransition =
+            TransitionInflater.from(context)
+                .inflateTransition(android.R.transition.move)
+
+        parentFragmentManager.beginTransaction()
+            .addSharedElement(sharedView, "shared_image")
+            .replace(R.id.container, detailFragment)
+            .addToBackStack(null)
+            .commit()
+    }
+}
+```
 ## Compose 优化
 ### 重组（Recomposition）控制
 ```
@@ -4999,6 +6187,161 @@ fun OptimizedList(items: List<Item>) {
 }
 ```
 ### LazyColumn 优化
+1.key 参数:  
+```
+LazyColumn {
+    items(
+        items = articleList,
+        key = { article -> article.id } // 提供稳定的key
+        // 作用：
+        // 1. 数据更新时，Compose 知道哪些item变了
+        // 2. 只重组变化的item，不重组全部
+        // 3. 支持item动画（添加/删除/移动）
+    ) { article ->
+        ArticleItem(article = article)
+    }
+}
+```
+
+2.contentType :  
+```
+LazyColumn {
+    items(
+        items = mixedList,
+        key = { it.id },
+        contentType = { item ->
+            // 告诉Compose不同类型的item不能复用
+            when (item) {
+                is BannerItem -> "banner"
+                is ArticleItem -> "article"
+                is AdItem -> "ad"
+                else -> "unknown"
+            }
+        }
+    ) { item ->
+        when (item) {
+            is BannerItem -> BannerCard(item)
+            is ArticleItem -> ArticleCard(item)
+            is AdItem -> AdCard(item)
+        }
+    }
+}
+```
+
+3.避免在 item 中创建 State:  
+```
+// ❌ 错误：每次重组都创建新State
+@Composable
+fun ArticleItem(article: Article) {
+    var isExpanded by remember { mutableStateOf(false) }
+    // 问题：LazyColumn 回收item时，State丢失
+    // 滑回来时 isExpanded 重置为 false
+}
+
+// ✅ 正确：State 提升到 ViewModel
+@Composable
+fun ArticleItem(
+    article: Article,
+    isExpanded: Boolean,           // 从外部传入
+    onExpandChange: (Boolean) -> Unit // 状态变化回调
+) {
+    // item 只负责展示，不持有状态
+}
+```
+
+4.图片加载优化:  
+```
+@Composable
+fun ArticleItem(article: Article) {
+    AsyncImage(
+        model = ImageRequest.Builder(LocalContext.current)
+            .data(article.imageUrl)
+            .size(200, 150)          // 指定目标尺寸，避免加载大图
+            .crossfade(true)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .build(),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.size(200.dp, 150.dp)
+    )
+}
+```
+
+5.减少重组范围:  
+```
+// ❌ 整个item都会因为任何状态变化而重组
+@Composable
+fun ArticleItem(article: Article, viewModel: ArticleViewModel) {
+    val likeCount by viewModel.getLikeCount(article.id).collectAsState()
+
+    Column {
+        // likeCount 变化时，整个Column重组
+        Text(article.title)    // 不依赖likeCount，但也重组了
+        Text(article.content)  // 不依赖likeCount，但也重组了
+        LikeButton(count = likeCount) // 依赖likeCount
+    }
+}
+
+// ✅ 状态下沉，缩小重组范围
+@Composable
+fun ArticleItem(article: Article, viewModel: ArticleViewModel) {
+    Column {
+        Text(article.title)    // 不重组
+        Text(article.content)  // 不重组
+        LikeSection(           // 只有这部分重组
+            articleId = article.id,
+            viewModel = viewModel
+        )
+    }
+}
+
+@Composable
+fun LikeSection(articleId: String, viewModel: ArticleViewModel) {
+    val likeCount by viewModel.getLikeCount(articleId).collectAsState()
+    LikeButton(count = likeCount)
+}
+```
+
+6.预加载配置:  
+```
+LazyColumn(
+    // 预加载距离：提前加载屏幕外的item
+    // 默认：一个屏幕高度
+    // 增大：滑动更流畅，但内存占用增加
+    state = rememberLazyListState(),
+    // 通过 LazyListState 可以监听滚动状态
+) {
+    // ...
+}
+
+// 监听滚动，实现无限加载
+@Composable
+fun InfiniteList(viewModel: ListViewModel) {
+    val listState = rememberLazyListState()
+    val items by viewModel.items.collectAsState()
+
+    // 检测是否滚动到底部
+    val shouldLoadMore by remember {
+        derivedStateOf {
+            val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+            val totalItems = listState.layoutInfo.totalItemsCount
+            lastVisibleItem?.index != null &&
+            lastVisibleItem.index >= totalItems - 5 // 距底部5条时加载
+        }
+    }
+
+    LaunchedEffect(shouldLoadMore) {
+        if (shouldLoadMore) viewModel.loadMore()
+    }
+
+    LazyColumn(state = listState) {
+        items(items, key = { it.id }) { item ->
+            ItemCard(item)
+        }
+    }
+}
+```
 ### 稳定性
 ```
 // Compose 重组优化依赖「稳定性」判断
