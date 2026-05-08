@@ -2497,6 +2497,574 @@ class MyApplication : Application() {
 ### IdleHandler 合理使用
 # 渲染优化	
 ## 帧率优化
+### 首帧优化
+首帧定义：  
+```
+首帧 ≠ Activity.onCreate() 完成
+首帧 ≠ setContentView() 完成
+首帧 = 用户真正看到有意义内容的那一帧上屏
+
+几个关键时间点：
+
+时间轴：
+0ms    Activity.onCreate()
+  ↓    setContentView()
+  ↓    onStart() / onResume()
+  ↓    ViewRootImpl.performTraversals()  ← measure/layout/draw
+  ↓    RenderThread 提交 GPU
+  ↓    SurfaceFlinger 合成
+  ↓    屏幕显示 ← 这才是首帧！
+
+指标定义：
+├── TTID（Time To Initial Display）
+│     系统定义，Activity 首次渲染完成
+│     对应 Logcat: "Displayed com.xxx/.MainActivity: +1s234ms"
+│
+└── TTFD（Time To Full Display）
+      开发者定义，真正有意义的内容展示完成
+      对应 reportFullyDrawn() 调用时机
+```
+
+TTID & TTFD：  
+```
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        // ↑ TTID 从这里开始计算首帧
+
+        // 此时界面可能只有骨架屏/占位图
+        // 用户看到的不是真正的内容
+
+        viewModel.data.observe(this) { data ->
+            renderContent(data)
+            // ↑ 真正的内容渲染完成
+
+            reportFullyDrawn()
+            // ↑ TTFD：告诉系统"现在才是真正展示完成"
+        }
+    }
+}
+
+// TTID 和 TTFD 的差距 = 数据加载时间
+// 优化目标：
+// ① 缩短 TTID（让界面尽快出现，哪怕是骨架屏）
+// ② 缩短 TTFD（让真实内容尽快展示）
+// ③ 缩短 TTFD - TTID 的差值（骨架屏展示时间）
+```
+
+完整流程：  
+```
+setContentView(R.layout.activity_main)
+         │
+         ▼
+① XML 解析 + View 创建
+   XmlPullParser 解析 XML
+   反射创建每个 View 对象
+   设置 LayoutParams 和属性
+         │
+         ▼
+② ViewTree 构建完成
+   DecorView
+   └── LinearLayout（系统）
+         └── FrameLayout（content）
+               └── 你的根布局
+                     └── 子View树
+         │
+         ▼
+③ onResume() 执行完毕
+   此时 ViewRootImpl 才开始工作
+   （onResume 之前不会触发绘制！）
+         │
+         ▼
+④ Choreographer 等待 VSync 信号
+   VSync 到来（16.6ms 一次，60fps）
+         │
+         ▼
+⑤ ViewRootImpl.performTraversals()
+   ├── performMeasure()   → View.measure()
+   ├── performLayout()    → View.layout()
+   └── performDraw()      → View.draw()
+         │
+         ▼
+⑥ RenderThread（硬件加速）
+   构建 DisplayList
+   提交给 GPU 渲染
+         │
+         ▼
+⑦ SurfaceFlinger
+   合成多个 Layer
+   送显到屏幕
+         │
+         ▼
+⑧ 用户看到首帧 ✅
+```
+#### 耗时
+1.布局 inflate 耗时：  
+```
+├── IO：从磁盘/内存读取 XML 文件
+├── XML 解析：XmlPullParser 逐字符解析
+├── 反射：Class.forName() + newInstance() 创建 View
+└── 属性设置：解析并设置每个 XML 属性
+
+典型耗时（低端机）：
+├── 简单布局（10个View）：~10ms
+├── 中等布局（30个View）：~30ms
+├── 复杂布局（100个View）：~100ms+
+└── 嵌套RecyclerView首屏：~200ms+
+```
+
+2.measure/layout 耗时：  
+```
+measure:
+├── 布局层级深：每层都要 measure，N层 = N次递归
+├── RelativeLayout：子View measure 两次！
+├── ConstraintLayout：复杂约束计算
+└── wrap_content + 多层嵌套：最坏情况 O(2^n)
+
+layout：
+├── 复杂位置计算
+└── 频繁的 requestLayout（触发重新 measure/layout）
+```
+
+3.draw 耗时：  
+```
+├── 过度绘制：同一像素被绘制多次
+├── 复杂自定义 View 的 onDraw
+├── 大量 Canvas 操作
+└── 软件渲染（未开启硬件加速）
+```
+#### 优化
+1.层级优化：  
+```
+<!-- ❌ 错误：深层嵌套 -->
+<LinearLayout>
+    <LinearLayout>
+        <RelativeLayout>
+            <LinearLayout>
+                <TextView/>
+                <ImageView/>
+            </LinearLayout>
+        </RelativeLayout>
+    </LinearLayout>
+</LinearLayout>
+
+<!-- ✅ 正确：ConstraintLayout 一层搞定 -->
+<ConstraintLayout>
+    <TextView
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"/>
+    <ImageView
+        app:layout_constraintTop_toBottomOf="@id/textView"
+        app:layout_constraintStart_toStartOf="parent"/>
+</ConstraintLayout>
+
+// 用 Layout Inspector 检测层级
+// Android Studio → View → Tool Windows → Layout Inspector
+
+// 用 Hierarchy Viewer 检测 measure/layout/draw 耗时
+// 红色节点 = 该层级耗时最长，重点优化
+```
+
+2.异步 inflate：  
+```
+// 方案一：AsyncLayoutInflater
+// 适用场景：非首屏页面预加载（上文已讲过局限性）
+
+// 方案二：X2C（编译期 XML → Java Code）
+// 彻底消除 XML 解析 + 反射
+
+// X2C 生成的代码示例：
+// 原 XML：
+// <TextView
+//     android:id="@+id/title"
+//     android:layout_width="match_parent"
+//     android:layout_height="wrap_content"
+//     android:textSize="16sp"
+//     android:textColor="#333333"/>
+
+// X2C 生成：
+class XC_ActivityMain : IViewCreator {
+    override fun createView(context: Context, tag: String?): View? {
+        return null
+    }
+
+    fun createView(context: Context): View {
+        val textView = TextView(context)
+        textView.id = R.id.title
+
+        val lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        textView.layoutParams = lp
+        textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        textView.setTextColor(0xFF333333.toInt())
+
+        return textView
+    }
+}
+
+// 接入方式：
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // 替换 setContentView
+        X2C.setContentView(this, R.layout.activity_main)
+    }
+}
+```
+
+3.ViewStub 延迟加载：  
+```
+// Xml
+<!-- activity_main.xml -->
+<LinearLayout>
+
+    <!-- 首屏必要内容：立即加载 -->
+    <include layout="@layout/header"/>
+    <include layout="@layout/main_content"/>
+
+    <!-- 非首屏内容：用 ViewStub 占位 -->
+    <ViewStub
+        android:id="@+id/stub_side_panel"
+        android:layout="@layout/side_panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"/>
+
+    <ViewStub
+        android:id="@+id/stub_bottom_sheet"
+        android:layout="@layout/bottom_sheet"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"/>
+
+</LinearLayout>
+
+// Java
+class MainActivity : AppCompatActivity() {
+
+    private var sidePanelInflated = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        // 此时 side_panel 和 bottom_sheet 都没有 inflate
+        // 首帧渲染更快！
+
+        setupMainContent() // 只处理首屏内容
+    }
+
+    // 用户点击侧边栏按钮时才 inflate
+    fun onSidePanelClick() {
+        if (!sidePanelInflated) {
+            val sidePanel = findViewById<ViewStub>(R.id.stub_side_panel)
+                .inflate() // 此时才真正 inflate
+            sidePanelInflated = true
+            setupSidePanel(sidePanel)
+        }
+        // 显示侧边栏
+    }
+}
+```
+
+4.骨架屏：  
+```
+// 骨架屏的本质：
+// 用简单的占位布局替代复杂的真实布局
+// 让用户感知到"有东西了"，降低等待焦虑
+
+class HomeActivity : AppCompatActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_home)
+
+        // 立即显示骨架屏（本地资源，无需网络）
+        showSkeleton()
+
+        // 异步加载真实数据
+        viewModel.loadData()
+        viewModel.uiState.observe(this) { state ->
+            when (state) {
+                is UiState.Loading -> showSkeleton()
+                is UiState.Success -> {
+                    hideSkeleton()
+                    renderContent(state.data)
+                    reportFullyDrawn() // 真实内容展示完成
+                }
+                is UiState.Error -> showError(state.error)
+            }
+        }
+    }
+
+    private fun showSkeleton() {
+        skeletonView.visibility = View.VISIBLE
+        contentView.visibility = View.GONE
+        // 骨架屏动画（shimmer效果）
+        shimmerLayout.startShimmer()
+    }
+
+    private fun hideSkeleton() {
+        shimmerLayout.stopShimmer()
+        skeletonView.visibility = View.GONE
+        contentView.visibility = View.VISIBLE
+    }
+}
+```
+
+5.onResume 前置优化：  
+```
+// onResume 执行完毕后，Choreographer 才开始等 VSync
+// onResume 之前的任何耗时都会延迟首帧
+
+class MainActivity : AppCompatActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // ❌ 错误：onCreate 中做耗时操作
+        val config = loadConfigFromDisk()      // IO，50ms
+        val user = queryUserFromDB()           // DB，80ms
+        setupComplexAnimation()               // 复杂计算，30ms
+        // 以上160ms全部在首帧之前！
+
+        setContentView(R.layout.activity_main)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        // ✅ 正确：先展示骨架屏，再异步加载数据
+        showSkeleton()
+
+        lifecycleScope.launch {
+            // 异步执行，不阻塞首帧
+            val config = withContext(Dispatchers.IO) {
+                loadConfigFromDisk()
+            }
+            val user = withContext(Dispatchers.IO) {
+                queryUserFromDB()
+            }
+            // 数据准备好后更新UI
+            hideSkeleton()
+            renderContent(config, user)
+            reportFullyDrawn()
+        }
+    }
+}
+```
+
+6.Compose首帧优化：  
+```
+// Compose 没有 XML inflate，首帧天然更快
+// 但 Compose 有自己的首帧问题：首次 Composition 耗时
+
+@Composable
+fun HomeScreen(viewModel: HomeViewModel = viewModel()) {
+    val uiState by viewModel.uiState.collectAsState()
+
+    // ❌ 错误：首帧直接渲染复杂内容
+    when (uiState) {
+        is UiState.Loading -> ComplexLoadingScreen() // 复杂加载界面
+        is UiState.Success -> ComplexHomeContent(uiState.data)
+        is UiState.Error -> ErrorScreen()
+    }
+
+    // ✅ 正确：首帧用简单骨架屏
+    when (uiState) {
+        is UiState.Loading -> {
+            // 简单的骨架屏，Composition 快
+            SkeletonScreen()
+        }
+        is UiState.Success -> {
+            // 真实内容，数据准备好后再渲染
+            HomeContent(data = uiState.data)
+            LaunchedEffect(Unit) {
+                reportFullyDrawn() // 通知系统真实内容已展示
+            }
+        }
+        is UiState.Error -> ErrorScreen()
+    }
+}
+
+// Compose 重组优化：避免首帧不必要的重组
+@Composable
+fun HomeContent(data: HomeData) {
+    // 用 remember 缓存计算结果，避免重组时重复计算
+    val processedData = remember(data) {
+        processData(data) // 只在 data 变化时重新计算
+    }
+
+    LazyColumn {
+        items(
+            items = processedData.items,
+            key = { it.id } // 提供 key，优化重组
+        ) { item ->
+            ItemCard(item = item)
+        }
+    }
+}
+```
+
+7.预渲染：  
+```
+// 预渲染：在用户进入页面之前，提前创建并渲染 View
+// 适用场景：高频访问的页面（如首页、详情页）
+
+object PreRenderer {
+
+    private var preRenderedView: View? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 在 Splash 页面展示期间，提前渲染首页
+    fun preRenderHome(context: Context) {
+        mainHandler.post {
+            // 必须在主线程创建 View
+            val view = LayoutInflater.from(context)
+                .inflate(R.layout.activity_home, null)
+
+            // 提前 measure（使用屏幕尺寸）
+            val width = context.resources.displayMetrics.widthPixels
+            val height = context.resources.displayMetrics.heightPixels
+            view.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
+            )
+            view.layout(0, 0, width, height)
+
+            preRenderedView = view
+        }
+    }
+
+    // HomeActivity 直接使用预渲染的 View
+    fun getPreRenderedHome(): View? {
+        return preRenderedView?.also {
+            preRenderedView = null // 用完清除
+        }
+    }
+}
+
+class SplashActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_splash)
+
+        // Splash 展示期间预渲染首页
+        PreRenderer.preRenderHome(applicationContext)
+
+        Handler(Looper.getMainLooper()).postDelayed({
+            startActivity(Intent(this, HomeActivity::class.java))
+        }, 2000)
+    }
+}
+
+class HomeActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // 尝试使用预渲染的 View
+        val preRendered = PreRenderer.getPreRenderedHome()
+        if (preRendered != null) {
+            // 直接使用，跳过 inflate + measure + layout
+            setContentView(preRendered)
+        } else {
+            // 降级：正常流程
+            setContentView(R.layout.activity_home)
+        }
+    }
+}
+```
+
+首帧渲染监控：  
+```
+// 精准监控首帧时间
+class FirstFrameMonitor {
+
+    companion object {
+        // 精准的首帧回调
+        fun registerFirstFrameCallback(
+            activity: AppCompatActivity,
+            onFirstFrame: (costMs: Long) -> Unit
+        ) {
+            val startTime = SystemClock.elapsedRealtime()
+
+            // 方式一：OnPreDrawListener（最早的绘制回调）
+            activity.window.decorView.viewTreeObserver
+                .addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+                    override fun onPreDraw(): Boolean {
+                        activity.window.decorView.viewTreeObserver
+                            .removeOnPreDrawListener(this)
+
+                        val cost = SystemClock.elapsedRealtime() - startTime
+                        onFirstFrame(cost)
+                        return true
+                    }
+                })
+
+            // 方式二：FrameMetrics API（Android 7.0+，更精准）
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                activity.window.addOnFrameMetricsAvailableListener(
+                    object : Window.OnFrameMetricsAvailableListener {
+                        private var firstFrame = true
+
+                        override fun onFrameMetricsAvailable(
+                            window: Window,
+                            frameMetrics: FrameMetrics,
+                            dropCountSinceLastInvocation: Int
+                        ) {
+                            if (firstFrame) {
+                                firstFrame = false
+                                window.removeOnFrameMetricsAvailableListener(this)
+
+                                // 获取首帧各阶段耗时
+                                val layoutMeasureDuration =
+                                    frameMetrics.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION)
+                                val drawDuration =
+                                    frameMetrics.getMetric(FrameMetrics.DRAW_DURATION)
+                                val gpuDuration =
+                                    frameMetrics.getMetric(FrameMetrics.GPU_DURATION)
+                                val totalDuration =
+                                    frameMetrics.getMetric(FrameMetrics.TOTAL_DURATION)
+
+                                // 上报详细数据
+                                APMReporter.reportFirstFrame(
+                                    layoutMs = layoutMeasureDuration / 1_000_000,
+                                    drawMs = drawDuration / 1_000_000,
+                                    gpuMs = gpuDuration / 1_000_000,
+                                    totalMs = totalDuration / 1_000_000
+                                )
+                            }
+                        }
+                    },
+                    Handler(Looper.getMainLooper())
+                )
+            }
+        }
+    }
+}
+
+// 使用
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        FirstFrameMonitor.registerFirstFrameCallback(this) { costMs ->
+            Log.d("FirstFrame", "首帧耗时: ${costMs}ms")
+        }
+
+        setContentView(R.layout.activity_main)
+    }
+}
+
+
+# 系统自动打印 TTID
+adb logcat | grep "Displayed"
+
+# 输出：
+# ActivityManager: Displayed com.xxx/.MainActivity: +1s234ms
+#                                                    ↑ TTID
+```
 ### Choreographer 帧监控
 ### FrameMetrics API
 ### Janky Frame 分析
