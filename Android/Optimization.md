@@ -1703,27 +1703,58 @@ object CpuBoostHelper {
 ```
 ## GC 抑制
 adb shell logcat | grep "GC_" 查看启动期间 GC 情况  
-### 启动期间抑制 GC
-1. 减少临时对象创建  
-2. 避免大对象分配（直接触发 GC）  
-3. 预分配关键对象（启动前置）
+```
+// GC 卡顿原因：
+// ART GC 分为：
+// ├── 并发GC（Concurrent GC）：大部分工作与App并发，STW极短
+// ├── 半空间GC（Semi-space GC）：STW较长，内存紧张时触发
+// └── 标记清除GC（Mark-Sweep）：STW中等
+
+// 触发GC的主要原因：
+// ├── 频繁创建短生命周期对象（内存抖动）
+// ├── 大对象分配（直接进入老年代）
+// └── 内存不足
+```
 ### 对象预分配
 预创建并复用的对象（对象池）  
 ```
-private val bufferPool = ArrayDeque<ByteArray>()
-bufferPool.add(ByteArray(1024 * 1024)) // 预分配1MB缓冲
+class ObjectPool<T>(
+    private val maxSize: Int = 10,
+    private val factory: () -> T,
+    private val reset: (T) -> Unit = {}
+) {
+    private val pool = ArrayDeque<T>(maxSize)
 
-fun acquireBuffer(): ByteArray = bufferPool.removeFirstOrNull() ?: ByteArray(1024 * 1024)
-    
-fun releaseBuffer(buffer: ByteArray) {
-     // 用完归还
-     bufferPool.addLast(buffer)
+    fun acquire(): T {
+        return if (pool.isEmpty()) {
+            factory() // 池空了，创建新对象
+        } else {
+            pool.removeFirst() // 从池中取
+        }
+    }
+
+    fun release(obj: T) {
+        if (pool.size < maxSize) {
+            reset(obj) // 重置状态
+            pool.addLast(obj) // 归还到池
+        }
+        // 池满了，让GC回收
+    }
 }
+
+// 使用对象池
+val rectPool = ObjectPool(
+    factory = { RectF() },
+    reset = { it.setEmpty() }
+)
 ```
-### GC 优化
-1.锁屏 GC  
-2.需要资源的特殊场景不 GC  
-3.后台 GC  
+### Tips
+1. 减少临时对象创建  
+2. 避免大对象分配（直接触发 GC）  
+3. 预分配关键对象（启动前置）
+4.锁屏 GC  
+5.需要资源的特殊场景不 GC  
+6.后台 GC  
 但是，正常来讲 GC 是系统决定的，非必要应用侧不应该主动调用显式 GC，而是去分析内存问题
 ## 监控
 ```
@@ -2934,38 +2965,192 @@ class DataManagerV4 {
 }
 ```
 ## 卡顿监控	
+### 死锁检测
+```
+// ================================
+// 死锁检测
+// ================================
+object DeadlockDetector {
+
+    fun detect(): List<ThreadInfo> {
+        val threadMXBean = ManagementFactory.getThreadMXBean()
+
+        // 检测死锁线程
+        val deadlockedIds = threadMXBean.findDeadlockedThreads()
+            ?: return emptyList()
+
+        return threadMXBean.getThreadInfo(deadlockedIds, true, true)
+            .map { info ->
+                ThreadInfo(
+                    threadName = info.threadName,
+                    state = info.threadState.name,
+                    lockName = info.lockName ?: "unknown",
+                    lockOwnerName = info.lockOwnerName ?: "none",
+                    stackTrace = info.stackTrace.joinToString("\n") { "\tat $it" }
+                )
+            }
+    }
+
+    data class ThreadInfo(
+        val threadName: String,
+        val state: String,
+        val lockName: String,
+        val lockOwnerName: String,
+        val stackTrace: String
+    )
+}
+
+// 定期检测死锁
+thread(name = "deadlock-detector", isDaemon = true) {
+    while (true) {
+        Thread.sleep(5000)
+        val deadlocks = DeadlockDetector.detect()
+        if (deadlocks.isNotEmpty()) {
+            Log.e("DeadlockDetector", "检测到死锁！")
+            deadlocks.forEach { Log.e("DeadlockDetector", it.toString()) }
+        }
+    }
+}
+```
 ### Looper 消息监控
 ```
 // 原理：主线程所有任务都通过 Looper 执行
 // 监控每条消息的处理时间
 // 超过阈值 → 卡顿
 
-class LooperMonitor : Printer {
+// 原理：Looper 处理每条消息前后调用 Printer
+// 通过时间差判断消息处理是否超时
+
+class LooperMonitor private constructor() : MessageQueue.IdleHandler {
+
+    companion object {
+        val instance by lazy { LooperMonitor() }
+        private const val JANK_THRESHOLD = 100L    // 轻微卡顿阈值
+        private const val BLOCK_THRESHOLD = 3000L  // 严重卡顿阈值
+    }
 
     private var msgStartTime = 0L
-    private val threshold = 16L // 16ms
+    private var msgStartWallTime = 0L
+    private var isMonitoring = false
 
-    // Looper 在处理每条消息前后会调用 Printer.println
-    // 消息开始：">>>>>>"
-    // 消息结束："<<<<<<"
-    override fun println(msg: String) {
-        if (msg.startsWith(">")) {
-            // 消息开始处理
-            msgStartTime = SystemClock.elapsedRealtime()
-        } else if (msg.startsWith("<")) {
-            // 消息处理完成
-            val cost = SystemClock.elapsedRealtime() - msgStartTime
-            if (cost > threshold) {
-                // 发现卡顿，采集堆栈
-                reportJank(cost, collectMainThreadStack())
+    // 堆栈采集器（异步采集，不影响主线程）
+    private val stackSampler = StackSampler()
+
+    private val printer = object : Printer {
+        override fun println(msg: String) {
+            if (!isMonitoring) return
+
+            if (msg.startsWith(">>>>>")) {
+                // 消息开始处理
+                onMessageStart()
+            } else if (msg.startsWith("<<<<<")) {
+                // 消息处理完成
+                onMessageEnd(msg)
             }
         }
     }
 
-    private fun collectMainThreadStack(): String {
-        return Looper.getMainLooper().thread
-            .stackTrace
-            .joinToString("\n") { "\tat $it" }
+    private fun onMessageStart() {
+        msgStartTime = SystemClock.elapsedRealtime()
+        msgStartWallTime = System.currentTimeMillis()
+
+        // 开始异步采集堆栈
+        // 在消息处理期间，每隔一段时间采集一次主线程堆栈
+        stackSampler.startSampling(Looper.getMainLooper().thread)
+    }
+
+    private fun onMessageEnd(msg: String) {
+        val cost = SystemClock.elapsedRealtime() - msgStartTime
+        stackSampler.stopSampling()
+
+        when {
+            cost >= BLOCK_THRESHOLD -> {
+                // 严重卡顿：上报完整堆栈
+                val stacks = stackSampler.getCollectedStacks()
+                reportBlock(cost, msg, stacks)
+            }
+            cost >= JANK_THRESHOLD -> {
+                // 轻微卡顿：上报最后一次堆栈
+                val lastStack = stackSampler.getLastStack()
+                reportJank(cost, msg, lastStack)
+            }
+        }
+    }
+
+    fun install() {
+        isMonitoring = true
+        Looper.getMainLooper().setMessageLogging(printer)
+        // 注册 IdleHandler：主线程空闲时的回调
+        Looper.myQueue().addIdleHandler(this)
+    }
+
+    // IdleHandler：主线程空闲时触发
+    // 可以在这里做一些低优先级的工作
+    override fun queueIdle(): Boolean {
+        // 返回 true = 保持注册，下次空闲继续回调
+        return true
+    }
+}
+
+// ================================
+// 堆栈采样器（子线程定时采集主线程堆栈）
+// ================================
+class StackSampler {
+
+    private val sampleInterval = 20L // 每20ms采集一次
+    private val maxSamples = 100     // 最多保留100次采样
+    private val samples = ArrayDeque<StackEntry>()
+
+    @Volatile private var isSampling = false
+    private var samplingThread: Thread? = null
+    private var targetThread: Thread? = null
+
+    data class StackEntry(
+        val timestamp: Long,
+        val stack: String,
+        val cpuTime: Long
+    )
+
+    fun startSampling(thread: Thread) {
+        targetThread = thread
+        isSampling = true
+        samples.clear()
+
+        samplingThread = thread(name = "stack-sampler", isDaemon = true) {
+            while (isSampling) {
+                try {
+                    val stack = thread.stackTrace
+                        .joinToString("\n") { "\tat $it" }
+
+                    synchronized(samples) {
+                        if (samples.size >= maxSamples) {
+                            samples.removeFirst()
+                        }
+                        samples.addLast(StackEntry(
+                            timestamp = SystemClock.elapsedRealtime(),
+                            stack = stack,
+                            cpuTime = Debug.threadCpuTimeNanos()
+                        ))
+                    }
+                    Thread.sleep(sampleInterval)
+                } catch (e: InterruptedException) {
+                    break
+                }
+            }
+        }
+    }
+
+    fun stopSampling() {
+        isSampling = false
+        samplingThread?.interrupt()
+    }
+
+    fun getCollectedStacks(): List<StackEntry> {
+        return synchronized(samples) { samples.toList() }
+    }
+
+    fun getLastStack(): StackEntry? {
+        return synchronized(samples) { samples.lastOrNull() }
     }
 }
 
@@ -3089,98 +3274,81 @@ class FrameMetricsMonitor(private val activity: Activity) {
 
 实现：  
 ```
-class WatchDog(
-    private val threshold: Long = 3000L, // 卡顿阈值（ms）
-    private val checkInterval: Long = 1000L // 检查间隔（ms）
+// 在渲染优化章节的基础上，增加更多能力
+
+class EnhancedWatchDog(
+    private val blockThreshold: Long = 3000L,
+    private val anrThreshold: Long = 5000L
 ) {
-
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val stackSampler = StackSampler()
 
-    @Volatile
-    private var tickCount = 0L  // 主线程执行计数
+    @Volatile private var tickCount = 0L
+    @Volatile private var lastTickCount = -1L
+    @Volatile private var blockStartTime = 0L
 
-    @Volatile
-    private var lastTickCount = 0L // 上次检查时的计数
-
-    @Volatile
-    private var blockStartTime = 0L // 阻塞开始时间
-
-    private var isRunning = false
-    private var watchThread: Thread? = null
-
-    // 主线程任务：每次执行都更新 tickCount
-    private val tickRunnable = Runnable {
-        tickCount++
-    }
+    private val tickRunnable = Runnable { tickCount++ }
 
     fun start() {
-        isRunning = true
-
-        // 定期向主线程 post 任务
         mainHandler.post(tickRunnable)
 
-        watchThread = thread(name = "watchdog") {
-            while (isRunning) {
-                Thread.sleep(checkInterval)
-
-                // 检查主线程是否执行了任务
-                if (tickCount == lastTickCount) {
-                    // 主线程没有执行 tickRunnable
-                    // 说明主线程被阻塞了
-
-                    if (blockStartTime == 0L) {
-                        blockStartTime = SystemClock.elapsedRealtime()
-                    }
-
-                    val blockDuration = SystemClock.elapsedRealtime() - blockStartTime
-
-                    if (blockDuration >= threshold) {
-                        // 超过阈值，上报卡顿
-                        reportBlock(blockDuration)
-                    }
-                } else {
-                    // 主线程正常执行
-                    blockStartTime = 0L
-                    lastTickCount = tickCount
-
-                    // 继续 post 下一个 tick
-                    mainHandler.post(tickRunnable)
-                }
+        thread(name = "enhanced-watchdog", isDaemon = true) {
+            while (true) {
+                Thread.sleep(1000L)
+                checkMainThread()
             }
         }
     }
 
-    private fun reportBlock(blockDuration: Long) {
-        // 采集主线程堆栈
-        val mainThread = Looper.getMainLooper().thread
-        val stackTrace = mainThread.stackTrace
-            .joinToString("\n") { "\tat $it" }
+    private fun checkMainThread() {
+        if (tickCount != lastTickCount) {
+            // 主线程正常
+            lastTickCount = tickCount
+            blockStartTime = 0L
+            stackSampler.stopSampling()
+            mainHandler.post(tickRunnable)
+            return
+        }
 
-        // 采集所有线程堆栈（更全面的信息）
-        val allThreadStacks = Thread.getAllStackTraces()
-            .entries
-            .joinToString("\n\n") { (thread, stack) ->
-                "Thread: ${thread.name} (${thread.state})\n" +
-                stack.joinToString("\n") { "\tat $it" }
+        // 主线程可能阻塞
+        val now = SystemClock.elapsedRealtime()
+
+        if (blockStartTime == 0L) {
+            // 刚开始阻塞，启动堆栈采集
+            blockStartTime = now
+            stackSampler.startSampling(Looper.getMainLooper().thread)
+            return
+        }
+
+        val blockDuration = now - blockStartTime
+
+        when {
+            blockDuration >= anrThreshold -> {
+                // ANR 级别
+                val stacks = stackSampler.getCollectedStacks()
+                reportAnrLevel(blockDuration, stacks)
+                // 同时读取 /data/anr/traces.txt（如果有权限）
+                readAnrTraces()
             }
-
-        Log.e("WatchDog",
-            "主线程卡顿 ${blockDuration}ms\n" +
-            "主线程堆栈：\n$stackTrace"
-        )
-
-        // 上报到 APM
-        BlockReporter.report(
-            blockDurationMs = blockDuration,
-            mainThreadStack = stackTrace,
-            allThreadStacks = allThreadStacks
-        )
+            blockDuration >= blockThreshold -> {
+                // 严重卡顿
+                val stacks = stackSampler.getCollectedStacks()
+                reportBlock(blockDuration, stacks)
+            }
+        }
     }
 
-    fun stop() {
-        isRunning = false
-        mainHandler.removeCallbacks(tickRunnable)
-        watchThread?.interrupt()
+    private fun readAnrTraces() {
+        try {
+            val tracesFile = File("/data/anr/traces.txt")
+            if (tracesFile.exists() && tracesFile.canRead()) {
+                val content = tracesFile.readText()
+                // 解析 traces 文件，提取关键信息
+                parseAnrTraces(content)
+            }
+        } catch (e: Exception) {
+            // 无权限，忽略
+        }
     }
 }
 
@@ -3265,9 +3433,45 @@ class SplashActivity : AppCompatActivity() {
 每个进程的 Binder 线程池默认最多 15 个线程，大量异步任务同时发起 Binder 调用 -> 每个调用都在等待 system_server 响应 -> 新的 Binder 请求：只能排队等待 -> 主线程的 Binder 调用也被阻塞 -> ANR
 
 ```
-// 检测 Binder 线程池状态
 // adb shell cat /proc/[pid]/status | grep Threads
 // 观察线程数是否接近 15（Binder线程上限）
+
+// 监控 Binder 线程池使用情况
+object BinderThreadMonitor {
+    fun checkBinderThreadPool(): BinderThreadInfo {
+        return try {
+            // /proc/[pid]/status 包含线程数信息
+            val statusFile = File("/proc/${Process.myPid()}/status")
+            val content = statusFile.readText()
+
+            // 解析线程数
+            val threads = content.lines()
+                .find { it.startsWith("Threads:") }
+                ?.split("\\s+".toRegex())
+                ?.getOrNull(1)
+                ?.toIntOrNull() ?: 0
+
+            // Binder 线程通常命名为 Binder:pid_N
+            val binderThreadCount = Thread.getAllStackTraces()
+                .keys
+                .count { it.name.startsWith("Binder:") }
+
+            BinderThreadInfo(
+                totalThreads = threads,
+                binderThreads = binderThreadCount,
+                isPoolExhausted = binderThreadCount >= 15 // 默认上限15
+            )
+        } catch (e: Exception) {
+            BinderThreadInfo(0, 0, false)
+        }
+    }
+
+    data class BinderThreadInfo(
+        val totalThreads: Int,
+        val binderThreads: Int,
+        val isPoolExhausted: Boolean
+    )
+}
 
 // 优化方案：控制并发 Binder 调用数量
 class BinderCallLimiter {
@@ -4067,12 +4271,190 @@ class MyApplication : Application() {
 ### 主线程SP读写（MMKV 替代）
 ### 文件 IO 异步化
 ## 线程调度	
-### 线程优先级
-### CPU 亲和性
-### 线程饥饿问题
+### 单线程协程调度
+```
+class SingleThreadDataManager {
+    // 所有操作在同一个协程上下文中串行执行
+    // 天然线程安全，无需锁
+    private val dispatcher = Dispatchers.IO.limitedParallelism(1)
+    private var data: String = ""
+
+    suspend fun updateData(newData: String) = withContext(dispatcher) {
+        data = newData // 单线程执行，无竞争
+    }
+
+    suspend fun getData(): String = withContext(dispatcher) {
+        data
+    }
+}
+```
+### 超时
+```
+class TimeoutLockExample {
+    private val lock = ReentrantLock()
+
+    fun tryExecute(timeoutMs: Long, action: () -> Unit): Boolean {
+        // 尝试获取锁，超时则放弃
+        if (lock.tryLock(timeoutMs, TimeUnit.MILLISECONDS)) {
+            try {
+                action()
+                return true
+            } finally {
+                lock.unlock()
+            }
+        }
+        // 获取锁超时，上报卡顿
+        reportLockTimeout(timeoutMs)
+        return false
+    }
+}
+```
 ## 消息队列	
 ### Handler 消息积压
+```
+// ================================
+// 问题：消息队列积压导致卡顿
+// ================================
+
+// 场景：高频事件（传感器/触摸）产生大量消息
+// 主线程处理不过来 → 消息积压 → 延迟响应
+
+class SensorDataProcessor {
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // ❌ 问题：每次传感器数据都 post 到主线程
+    // 传感器频率 100Hz = 每10ms一条消息
+    // 主线程处理一条消息需要 16ms
+    // 消息积压越来越多！
+    fun onSensorDataBad(data: SensorData) {
+        mainHandler.post {
+            updateUI(data) // 主线程处理
+        }
+    }
+
+    // ✅ 优化一：合并消息（只处理最新的）
+    private var pendingData: SensorData? = null
+    private val processRunnable = Runnable {
+        pendingData?.let { updateUI(it) }
+        pendingData = null
+    }
+
+    fun onSensorDataGood(data: SensorData) {
+        pendingData = data
+        // 移除旧的消息，只保留最新的
+        mainHandler.removeCallbacks(processRunnable)
+        mainHandler.post(processRunnable)
+    }
+
+    // ✅ 优化二：降低处理频率（采样）
+    private var lastProcessTime = 0L
+    private val minInterval = 16L // 最多60fps
+
+    fun onSensorDataSampled(data: SensorData) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastProcessTime < minInterval) return // 丢弃过于频繁的数据
+
+        lastProcessTime = now
+        mainHandler.post { updateUI(data) }
+    }
+}
+```
+### Handler 消息优化
+```
+// ================================
+// 优化一：使用 Message 对象池
+// ================================
+
+// ❌ 直接创建 Message 对象
+handler.post(Runnable { doSomething() })
+// 每次都创建新的 Message 和 Runnable 对象
+
+// ✅ 使用 Message.obtain() 复用对象池中的 Message
+val msg = Message.obtain(handler) {
+    doSomething()
+}
+handler.sendMessage(msg)
+// Message 处理完后自动归还到对象池
+
+// ================================
+// 优化二：避免内存泄漏（弱引用）
+// ================================
+
+// ❌ 匿名内部类 Handler 持有 Activity 引用
+class BadActivity : AppCompatActivity() {
+    // 内部类持有外部类引用 → 内存泄漏！
+    private val handler = object : Handler(Looper.getMainLooper()) {
+        override fun handleMessage(msg: Message) {
+            // 这里隐式持有 BadActivity.this
+            updateUI()
+        }
+    }
+}
+
+// ✅ 静态内部类 + 弱引用
+class GoodActivity : AppCompatActivity() {
+
+    private val handler = SafeHandler(this)
+
+    class SafeHandler(activity: GoodActivity) :
+        Handler(Looper.getMainLooper()) {
+
+        // 弱引用，不阻止 Activity 被回收
+        private val weakActivity = WeakReference(activity)
+
+        override fun handleMessage(msg: Message) {
+            val activity = weakActivity.get() ?: return
+            // Activity 已被回收，不执行
+            activity.updateUI()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacksAndMessages(null) // 清除所有消息
+    }
+}
+```
 ### IdleHandler 合理使用
+```
+// IdleHandler：主线程空闲时执行任务
+// 不影响主线程正常任务，利用空闲时间做低优先级工作
+
+class IdleTaskScheduler {
+
+    private val pendingTasks = ArrayDeque<() -> Unit>()
+
+    fun scheduleWhenIdle(task: () -> Unit) {
+        pendingTasks.addLast(task)
+
+        Looper.myQueue().addIdleHandler(object : MessageQueue.IdleHandler {
+            override fun queueIdle(): Boolean {
+                // 主线程空闲时执行一个任务
+                val nextTask = pendingTasks.removeFirstOrNull()
+                nextTask?.invoke()
+
+                // 返回 true = 还有任务，继续注册
+                // 返回 false = 任务完成，取消注册
+                return pendingTasks.isNotEmpty()
+            }
+        })
+    }
+}
+
+// 使用场景：
+// ① 预加载下一页数据
+// ② 预创建 ViewHolder
+// ③ 清理缓存
+// ④ 上报日志
+
+val scheduler = IdleTaskScheduler()
+
+// 首帧渲染完成后，利用空闲时间预加载
+scheduler.scheduleWhenIdle { preloadNextPage() }
+scheduler.scheduleWhenIdle { warmupImageCache() }
+scheduler.scheduleWhenIdle { reportAnalytics() }
+```
 # 渲染优化	
 ```
 App 进程                    系统进程
