@@ -4422,8 +4422,702 @@ class MyApplication : Application() {
     → 超过阈值 → 触发回调 → 上报APM
 ```
 ## 系统调用	
-### 主线程SP读写（MMKV 替代）
+### 主线程SP读写
+1.问题：  
+```
+SP 的实现原理：
+├── 数据存储：XML 文件（/data/data/包名/shared_prefs/xxx.xml）
+├── 读取：首次 getSharedPreferences → 解析整个 XML 文件到内存
+├── 写入：commit() → 同步写磁盘（主线程阻塞！）
+│         apply()  → 异步写磁盘（但有隐患）
+└── 内存：整个文件常驻内存（即使只用一个key）
+
+具体问题：
+┌────────────────────────────────────────────────────┐
+│ 问题一：首次加载阻塞主线程                           │
+│ getSharedPreferences() 在主线程调用                 │
+│ → 触发文件 IO 解析 XML                              │
+│ → 文件越大越慢（可能 10ms~100ms）                   │
+├────────────────────────────────────────────────────┤
+│ 问题二：commit() 同步写磁盘                          │
+│ editor.commit() 直接在调用线程写磁盘                 │
+│ → 主线程调用 = 主线程阻塞                            │
+├────────────────────────────────────────────────────┤
+│ 问题三：apply() 的隐患                               │
+│ apply() 看似异步，但：                               │
+│ Activity.onStop/onPause 时系统会等待                 │
+│ 所有 apply() 的写入完成                              │
+│ → 可能导致 onStop 卡顿甚至 ANR                       │
+├────────────────────────────────────────────────────┤
+│ 问题四：多进程不安全                                 │
+│ MODE_MULTI_PROCESS 已废弃                           │
+│ 多进程读写同一个 SP → 数据损坏                       │
+└────────────────────────────────────────────────────┘
+```
+
+2.MMKV：  
+```
+MMKV（腾讯开源）原理：
+├── 存储格式：Protocol Buffers（二进制，比XML快）
+├── 读写机制：mmap 内存映射文件
+│   └── 写入 = 写内存（OS异步刷盘，无需等待）
+├── 增量更新：只追加变化的key，不重写整个文件
+└── 多进程：文件锁保证安全
+
+传统文件 IO 流程：
+                    用户空间          内核空间
+write(data) →  [用户缓冲区]  →  [内核缓冲区]  →  [磁盘]
+                    ↑                  ↑
+              数据在这里           数据复制到这里
+              
+问题：
+① 用户空间 → 内核空间：一次数据拷贝
+② 内核空间 → 磁盘：一次磁盘 IO
+③ 必须等待 ② 完成，write() 才返回（同步）
+
+─────────────────────────────────────────────────
+
+mmap 流程：
+                    用户空间          内核空间
+mmap() →       [映射内存区域]  ←→  [内核页缓存]  →  [磁盘]
+                    ↑                  ↑
+              直接操作这块内存    OS自动同步到磁盘
+              
+优势：
+① 写入 = 写内存（纳秒级，无需等待磁盘）
+② OS 负责将页缓存异步刷到磁盘（不阻塞App）
+③ 进程崩溃？OS 仍然会将页缓存刷盘，数据不丢失
+④ 读取 = 读内存（如果页在内存中，无磁盘 IO）
+
+// mmap 在 Android/Linux 的系统调用
+// MMKV 的 C++ 层核心代码（简化）：
+
+// 1. 打开文件
+int fd = open(path, O_RDWR | O_CREAT, S_IRWXU);
+
+// 2. 设置文件大小（mmap 需要预先分配空间）
+ftruncate(fd, fileSize); // 初始 4KB，不够时扩容
+
+// 3. 内存映射
+void* ptr = mmap(
+    nullptr,          // 让OS选择映射地址
+    fileSize,         // 映射大小
+    PROT_READ | PROT_WRITE, // 可读可写
+    MAP_SHARED,       // 共享映射（写入对其他进程可见）
+    fd,               // 文件描述符
+    0                 // 文件偏移量
+);
+
+// 4. 写入数据（就是写内存！）
+memcpy(ptr + offset, data, dataSize);
+// 这一行完成后，数据就"写入"了
+// OS 会在合适时机（通常几秒内）将内存页刷到磁盘
+// 不需要等待！
+
+// 5. 主动刷盘（可选，需要强一致性时调用）
+msync(ptr, fileSize, MS_ASYNC); // 异步刷盘
+msync(ptr, fileSize, MS_SYNC);  // 同步刷盘（会阻塞）
+
+// Protobuf 编码原理
+
+XML（SP的格式）：
+<map>
+    <string name="user_id">12345</string>
+    <boolean name="is_login" value="true" />
+    <int name="age" value="25" />
+</map>
+
+存储大小：约 100 字节
+解析：字符串解析，需要遍历每个字符
+
+─────────────────────────────────────────────────
+
+Protobuf（MMKV的格式）：
+每个 key-value 编码为：
+[key长度(varint)][key内容][value类型+长度(varint)][value内容]
+
+"user_id" + "12345" 的编码：
+07 75 73 65 72 5F 69 64  ← "user_id"（7字节）
+05 31 32 33 34 35        ← "12345"（5字节）
+总共：12字节（vs XML的 35字节）
+
+优势：
+├── 体积更小（约 XML 的 1/3~1/5）
+├── 解析更快（直接读二进制，无需字符串解析）
+└── 增量追加（只追加新的key-value，不重写整个文件）
+
+// 增量写入
+
+SP 写入：改1个key → 重写整个文件
+┌─────────────────────────────────┐
+│ user_id=12345                   │
+│ is_login=true                   │  ← 改了这个
+│ age=25                          │
+│ theme=dark                      │
+└─────────────────────────────────┘
+整个文件重新写入！
+
+─────────────────────────────────────────────────
+
+MMKV 写入：改1个key → 追加到文件末尾
+┌─────────────────────────────────┐
+│ [user_id][12345]                │ ← 旧数据保留
+│ [is_login][true]                │ ← 旧数据保留
+│ [age][25]                       │ ← 旧数据保留
+│ [theme][dark]                   │ ← 旧数据保留
+│ [is_login][false]               │ ← 新数据追加到末尾
+└─────────────────────────────────┘
+
+读取时：从后往前扫描，取最新的值
+写入时：直接追加，O(1) 复杂度
+
+文件满了怎么办？
+→ 触发 trim：重新整理文件，去掉旧值，只保留最新值
+→ trim 操作耗时，但频率很低（文件满才触发）
+
+// 多进程安全
+
+多进程场景：
+进程A 和 进程B 同时写入同一个 MMKV 文件
+
+解决方案：文件锁（flock）
+
+进程A 写入：
+① flock(fd, LOCK_EX) // 获取排他锁
+② 追加数据到 mmap 内存
+③ flock(fd, LOCK_UN) // 释放锁
+
+进程B 同时写入：
+① flock(fd, LOCK_EX) // 等待进程A释放锁
+② 获得锁后，先检查文件是否被修改（CRC校验）
+③ 重新加载变化的数据
+④ 追加自己的数据
+⑤ 释放锁
+
+读取：使用共享锁（LOCK_SH），允许并发读
+
+// 多进程 MMKV 初始化
+val mmkv = MMKV.mmkvWithID(
+    "shared_prefs",
+    MMKV.MULTI_PROCESS_MODE // 开启多进程模式
+)
+
+性能对比：
+┌──────────┬───────────┬───────────┬──────────────┐
+│          │ 写入耗时  │ 读取耗时  │ 主线程安全    │
+├──────────┼───────────┼───────────┼──────────────┤
+│ SP       │ ~1ms/次   │ ~0.1ms/次 │ commit不安全  │
+│ MMKV     │ ~0.01ms/次│ ~0.01ms/次│ 完全安全      │
+└──────────┴───────────┴───────────┴──────────────┘
+
+
+// ================================
+// MMKV 接入
+// ================================
+
+// build.gradle
+// implementation 'com.tencent:mmkv:1.3.1'
+
+// Application 初始化
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        MMKV.initialize(this) // 初始化，指定存储目录
+    }
+}
+
+// ================================
+// 封装 MMKV（兼容 SP 接口）
+// ================================
+class MMKVPreferences(
+    private val mmkv: MMKV = MMKV.defaultMMKV()
+) : SharedPreferences {
+
+    // 读操作（直接读内存，极快）
+    override fun getString(key: String, defValue: String?): String? =
+        mmkv.decodeString(key, defValue)
+
+    override fun getInt(key: String, defValue: Int): Int =
+        mmkv.decodeInt(key, defValue)
+
+    override fun getLong(key: String, defValue: Long): Long =
+        mmkv.decodeLong(key, defValue)
+
+    override fun getBoolean(key: String, defValue: Boolean): Boolean =
+        mmkv.decodeBool(key, defValue)
+
+    override fun getFloat(key: String, defValue: Float): Float =
+        mmkv.decodeFloat(key, defValue)
+
+    override fun getStringSet(key: String, defValues: Set<String>?): Set<String>? =
+        mmkv.decodeStringSet(key, defValues)
+
+    override fun contains(key: String): Boolean = mmkv.containsKey(key)
+
+    override fun getAll(): Map<String, *> {
+        val result = mutableMapOf<String, Any?>()
+        mmkv.allKeys()?.forEach { key ->
+            result[key] = mmkv.decodeString(key)
+        }
+        return result
+    }
+
+    override fun edit(): SharedPreferences.Editor = MMKVEditor(mmkv)
+
+    override fun registerOnSharedPreferenceChangeListener(
+        listener: SharedPreferences.OnSharedPreferenceChangeListener
+    ) { /* MMKV 不支持，可用其他方式实现 */ }
+
+    override fun unregisterOnSharedPreferenceChangeListener(
+        listener: SharedPreferences.OnSharedPreferenceChangeListener
+    ) { }
+}
+
+class MMKVEditor(private val mmkv: MMKV) : SharedPreferences.Editor {
+
+    private val pendingChanges = mutableMapOf<String, Any?>()
+    private val pendingRemovals = mutableSetOf<String>()
+    private var clearAll = false
+
+    override fun putString(key: String, value: String?) = apply {
+        pendingChanges[key] = value
+    }
+    override fun putInt(key: String, value: Int) = apply {
+        pendingChanges[key] = value
+    }
+    override fun putLong(key: String, value: Long) = apply {
+        pendingChanges[key] = value
+    }
+    override fun putBoolean(key: String, value: Boolean) = apply {
+        pendingChanges[key] = value
+    }
+    override fun putFloat(key: String, value: Float) = apply {
+        pendingChanges[key] = value
+    }
+    override fun putStringSet(key: String, values: Set<String>?) = apply {
+        pendingChanges[key] = values
+    }
+    override fun remove(key: String) = apply {
+        pendingRemovals.add(key)
+    }
+    override fun clear() = apply { clearAll = true }
+
+    // commit/apply 都是写内存（mmap），极快，主线程安全
+    override fun commit(): Boolean {
+        applyChanges()
+        return true
+    }
+
+    override fun apply() {
+        applyChanges() // MMKV 的写入本身就是异步安全的
+    }
+
+    private fun applyChanges() {
+        if (clearAll) mmkv.clearAll()
+        pendingRemovals.forEach { mmkv.removeValueForKey(it) }
+        pendingChanges.forEach { (key, value) ->
+            when (value) {
+                is String -> mmkv.encode(key, value)
+                is Int -> mmkv.encode(key, value)
+                is Long -> mmkv.encode(key, value)
+                is Boolean -> mmkv.encode(key, value)
+                is Float -> mmkv.encode(key, value)
+                is Set<*> -> @Suppress("UNCHECKED_CAST")
+                    mmkv.encode(key, value as Set<String>)
+                null -> mmkv.removeValueForKey(key)
+            }
+        }
+    }
+}
+
+// ================================
+// SP 迁移到 MMKV（一次性迁移）
+// ================================
+object SPMigration {
+
+    fun migrate(context: Context, spName: String) {
+        val sp = context.getSharedPreferences(spName, Context.MODE_PRIVATE)
+        val mmkv = MMKV.mmkvWithID(spName)
+
+        // 检查是否已迁移
+        if (mmkv.containsKey("__migrated__")) return
+
+        // 迁移所有数据
+        sp.all.forEach { (key, value) ->
+            when (value) {
+                is String -> mmkv.encode(key, value)
+                is Int -> mmkv.encode(key, value)
+                is Long -> mmkv.encode(key, value)
+                is Boolean -> mmkv.encode(key, value)
+                is Float -> mmkv.encode(key, value)
+                is Set<*> -> @Suppress("UNCHECKED_CAST")
+                    mmkv.encode(key, value as Set<String>)
+            }
+        }
+
+        // 标记已迁移
+        mmkv.encode("__migrated__", true)
+
+        // 清除旧 SP（可选）
+        sp.edit().clear().apply()
+    }
+}
+```
+
+3.DataStore:  
+```
+├── 完全异步（基于协程和 Flow）
+├── 事务性写入（原子操作）
+├── 错误处理（IO 异常通过 Flow 传递）
+└── 强制异步（没有同步 API，不可能主线程调用）
+
+DataStore 底层使用 Protocol Buffers 存储
+（Preferences DataStore 也是，只是封装了类型安全的 API）
+
+文件位置：
+/data/data/包名/files/datastore/文件名.preferences_pb
+
+存储格式：Protobuf 二进制
+（比 SP 的 XML 更紧凑，解析更快）
+
+但 DataStore 的优化重点不在存储格式
+而在于：读写机制的正确性
+
+// DataStore 内部核心：SingleProcessDataStore
+
+// ================================
+// 写入机制（事务性）
+// ================================
+
+// dataStore.edit { } 的内部流程：
+
+// 1. 获取当前数据（从内存缓存或文件）
+// 2. 在协程中执行 transform 块（你的修改逻辑）
+// 3. 将修改后的数据序列化为 Protobuf
+// 4. 写入临时文件（.tmp 后缀）
+// 5. 原子重命名（rename tmp → 正式文件）
+//    rename 是原子操作，要么成功要么失败
+//    不会出现"写了一半"的情况
+// 6. 更新内存缓存
+// 7. 通知所有 Flow 收集者
+
+// 关键：步骤 3~5 在 IO 线程执行
+// 步骤 2（transform）在调用协程的上下文执行
+
+// ================================
+// 读取机制（Flow + 内存缓存）
+// ================================
+
+// dataStore.data 是一个 Flow<Preferences>
+// 内部实现：
+
+class SingleProcessDataStore {
+
+    // 内存缓存（StateFlow）
+    private val _data = MutableStateFlow<Preferences?>(null)
+
+    // 对外暴露的 Flow
+    val data: Flow<Preferences> = flow {
+        // 首次收集：从文件读取
+        val initialData = readFromFile()
+        _data.value = initialData
+        emit(initialData)
+
+        // 后续：监听内存缓存变化
+        _data.filterNotNull().collect { emit(it) }
+    }.flowOn(Dispatchers.IO) // IO 线程读取文件
+
+    // 写入
+    suspend fun edit(transform: suspend (MutablePreferences) -> Unit) {
+        // 在专用的单线程调度器上执行（串行化写入）
+        withContext(singleThreadContext) {
+            val current = _data.value ?: readFromFile()
+            val mutable = current.toMutablePreferences()
+
+            transform(mutable) // 执行用户的修改
+
+            val updated = mutable.toPreferences()
+
+            // 原子写入文件
+            writeToFileAtomically(updated)
+
+            // 更新内存缓存，触发 Flow 通知
+            _data.value = updated
+        }
+    }
+
+    private fun writeToFileAtomically(data: Preferences) {
+        val tmpFile = File(file.parent, "${file.name}.tmp")
+        // 写入临时文件
+        tmpFile.outputStream().use { output ->
+            PreferencesProto.serialize(data, output)
+        }
+        // 原子重命名
+        if (!tmpFile.renameTo(file)) {
+            throw IOException("写入失败")
+        }
+    }
+}
+
+// 不会 ANR
+
+SP apply() 的 ANR 原因：
+
+SP 内部有一个 QueuedWork 机制：
+apply() → 将写入任务加入 QueuedWork 队列
+Activity.onStop() → 系统调用 QueuedWork.waitToFinish()
+                  → 主线程等待所有 apply() 写入完成
+                  → 如果写入慢 → 主线程阻塞 → ANR
+
+─────────────────────────────────────────────────
+
+DataStore 为什么没有这个问题：
+
+① 没有 apply() 这个 API
+   只有 suspend fun edit()
+   必须在协程中调用
+   不可能在主线程同步调用
+
+② 写入完全在 IO 协程中
+   不依赖 QueuedWork
+   不会在 onStop 时阻塞主线程
+
+③ 即使 App 进程被杀
+   写入的是临时文件 + 原子重命名
+   要么写入成功，要么保留旧文件
+   不会出现数据损坏
+
+// DataStore 两种类型：
+// ├── Preferences DataStore：类似 SP，key-value
+// └── Proto DataStore：强类型，基于 Protobuf
+
+// ================================
+// Preferences DataStore
+// ================================
+
+// 创建 DataStore（全局单例）
+val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "user_settings"
+)
+
+// 定义 key
+object PreferencesKeys {
+    val USER_ID = longPreferencesKey("user_id")
+    val USER_NAME = stringPreferencesKey("user_name")
+    val IS_LOGGED_IN = booleanPreferencesKey("is_logged_in")
+    val THEME_MODE = intPreferencesKey("theme_mode")
+}
+
+// Repository 封装
+class UserPreferencesRepository(private val context: Context) {
+
+    // 读取（Flow，响应式）
+    val userIdFlow: Flow<Long> = context.dataStore.data
+        .catch { exception ->
+            // 读取异常处理
+            if (exception is IOException) {
+                emit(emptyPreferences())
+            } else throw exception
+        }
+        .map { preferences ->
+            preferences[PreferencesKeys.USER_ID] ?: 0L
+        }
+
+    val isLoggedIn: Flow<Boolean> = context.dataStore.data
+        .map { it[PreferencesKeys.IS_LOGGED_IN] ?: false }
+
+    // 写入（suspend，在协程中调用）
+    suspend fun saveUserId(userId: Long) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.USER_ID] = userId
+        }
+    }
+
+    suspend fun saveLoginState(isLoggedIn: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.IS_LOGGED_IN] = isLoggedIn
+        }
+    }
+
+    // 批量写入（原子操作）
+    suspend fun saveUserInfo(userId: Long, userName: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.USER_ID] = userId
+            preferences[PreferencesKeys.USER_NAME] = userName
+            preferences[PreferencesKeys.IS_LOGGED_IN] = true
+            // 以上三个操作是原子的
+        }
+    }
+
+    // 清除所有数据
+    suspend fun clearAll() {
+        context.dataStore.edit { it.clear() }
+    }
+}
+
+// ViewModel 中使用
+class SettingsViewModel(
+    private val repo: UserPreferencesRepository
+) : ViewModel() {
+
+    // 直接暴露 Flow 给 UI
+    val isLoggedIn = repo.isLoggedIn
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = false
+        )
+
+    fun logout() {
+        viewModelScope.launch {
+            repo.clearAll() // 自动在 IO 线程执行
+        }
+    }
+}
+```
 ### 文件 IO 异步化
+1.问题：  
+```
+文件 IO 耗时来源：
+├── 磁盘寻道时间（HDD：10ms，SSD：0.1ms，eMMC：0.5ms）
+├── 文件系统操作（open/close/stat）
+├── 数据传输（读写速度）
+└── 文件锁竞争
+
+典型耗时（低端机 eMMC）：
+├── 读取 1KB 文件：0.5ms~5ms
+├── 读取 1MB 文件：5ms~50ms
+├── 写入 1KB 文件：1ms~10ms
+└── 创建/删除文件：1ms~20ms
+
+主线程执行以上操作 → 直接导致卡顿
+```
+
+2.异步：  
+```
+// ================================
+// 封装异步文件操作工具类
+// ================================
+object AsyncFileIO {
+
+    // 异步读取文件（返回 Flow，支持进度）
+    fun readFileAsFlow(file: File): Flow<ByteArray> = flow {
+        emit(file.readBytes())
+    }.flowOn(Dispatchers.IO)
+
+    // 异步读取文本
+    suspend fun readText(file: File): String =
+        withContext(Dispatchers.IO) {
+            file.readText(Charsets.UTF_8)
+        }
+
+    // 异步写入文本
+    suspend fun writeText(file: File, content: String) =
+        withContext(Dispatchers.IO) {
+            file.writeText(content, Charsets.UTF_8)
+        }
+
+    // 异步追加写入
+    suspend fun appendText(file: File, content: String) =
+        withContext(Dispatchers.IO) {
+            file.appendText(content, Charsets.UTF_8)
+        }
+
+    // 带缓冲的大文件读取
+    suspend fun readLargeFile(
+        file: File,
+        bufferSize: Int = 8192,
+        onProgress: ((Float) -> Unit)? = null
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val totalSize = file.length()
+        val outputStream = ByteArrayOutputStream(totalSize.toInt())
+        var bytesRead = 0L
+
+        file.inputStream().buffered(bufferSize).use { input ->
+            val buffer = ByteArray(bufferSize)
+            var count: Int
+            while (input.read(buffer).also { count = it } != -1) {
+                outputStream.write(buffer, 0, count)
+                bytesRead += count
+                onProgress?.invoke(bytesRead.toFloat() / totalSize)
+            }
+        }
+        outputStream.toByteArray()
+    }
+
+    // 安全写入（先写临时文件，再重命名，防止写入中断导致文件损坏）
+    suspend fun safeWriteText(file: File, content: String) =
+        withContext(Dispatchers.IO) {
+            val tempFile = File(file.parent, "${file.name}.tmp")
+            try {
+                tempFile.writeText(content, Charsets.UTF_8)
+                // 原子重命名（同目录下）
+                if (!tempFile.renameTo(file)) {
+                    // renameTo 失败，手动复制
+                    file.writeText(content)
+                    tempFile.delete()
+                }
+            } catch (e: Exception) {
+                tempFile.delete()
+                throw e
+            }
+        }
+}
+
+// ================================
+// 日志文件异步写入（高频写入场景）
+// ================================
+class AsyncLogger(private val logFile: File) {
+
+    // 使用 Channel 作为缓冲队列
+    private val logChannel = Channel<String>(capacity = Channel.UNLIMITED)
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    init {
+        // 启动消费者协程，批量写入
+        scope.launch {
+            val buffer = StringBuilder()
+            var lastFlushTime = System.currentTimeMillis()
+
+            for (log in logChannel) {
+                buffer.appendLine(log)
+
+                val now = System.currentTimeMillis()
+                val shouldFlush = buffer.length > 4096 || // 缓冲区满
+                        now - lastFlushTime > 1000        // 超过1秒
+
+                if (shouldFlush) {
+                    flushBuffer(buffer.toString())
+                    buffer.clear()
+                    lastFlushTime = now
+                }
+            }
+            // Channel 关闭时，写入剩余内容
+            if (buffer.isNotEmpty()) {
+                flushBuffer(buffer.toString())
+            }
+        }
+    }
+
+    // 主线程调用，非阻塞
+    fun log(message: String) {
+        val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+            .format(Date())
+        logChannel.trySend("[$timestamp] $message")
+    }
+
+    private suspend fun flushBuffer(content: String) {
+        withContext(Dispatchers.IO) {
+            logFile.appendText(content)
+        }
+    }
+
+    fun close() {
+        logChannel.close()
+        scope.cancel()
+    }
+}
+```
 ## 线程调度	
 ### 单线程协程调度
 ```
