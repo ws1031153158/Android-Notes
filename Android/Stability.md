@@ -385,7 +385,114 @@ Java_com_xxx_NativeCrashHandler_install(
     }
 }
 ```
-### Breakpad / LLVM libunwind
+### Breakpad
+```
+Breakpad：Google 开源的跨平台崩溃捕获库
+├── 支持：Linux/Android/Windows/macOS/iOS
+├── 核心产物：minidump 文件（.dmp）
+│   └── 比 tombstone 更小，更标准化
+└── 工具链：
+    ├── dump_syms：从 so 提取符号信息
+    ├── minidump_stackwalk：解析 minidump
+    └── minidump-2-core：转换为 core dump
+
+与直接信号处理的对比：
+┌──────────────┬──────────────────┬────────────────────┐
+│              │ 自定义信号处理    │ Breakpad           │
+├──────────────┼──────────────────┼────────────────────┤
+│ 跨平台       │ 否               │ 是                 │
+│ 符号化       │ 需要自己实现      │ 完整工具链          │
+│ minidump     │ 否               │ 是（标准格式）      │
+│ 稳定性       │ 一般             │ 高（Google验证）    │
+│ 接入复杂度   │ 低               │ 中                 │
+└──────────────┴──────────────────┴────────────────────┘
+
+Breakpad 崩溃捕获流程：
+
+① 安装异常处理器
+   ├── Linux/Android：注册信号处理函数
+   │   SIGSEGV/SIGABRT/SIGFPE/SIGILL/SIGBUS
+   └── 使用备用信号栈（SA_ONSTACK）
+
+② 崩溃发生时：
+   ├── 信号处理函数被调用
+   ├── 创建 minidump 文件
+   │   ├── 线程列表 + 每个线程的寄存器状态
+   │   ├── 内存映射（/proc/pid/maps）
+   │   ├── 异常信息（信号/地址）
+   │   └── 系统信息（OS版本/CPU架构）
+   └── 写入磁盘
+
+③ 下次启动时上传 minidump
+
+④ 服务端符号化：
+   minidump + 符号文件 → 可读的崩溃堆栈
+
+minidump 文件结构：
+┌─────────────────────────────────┐
+│  Header（签名/版本/流数量）       │
+├─────────────────────────────────┤
+│  StreamDirectory（流目录）        │
+├─────────────────────────────────┤
+│  ThreadListStream（线程列表）     │
+│  ├── Thread 0（主线程）          │
+│  │   ├── ThreadId               │
+│  │   ├── SuspendCount           │
+│  │   ├── Context（寄存器状态）   │
+│  │   └── Stack Memory           │
+│  └── Thread N...                │
+├─────────────────────────────────┤
+│  ModuleListStream（模块列表）     │
+│  ├── so文件路径                  │
+│  ├── 基地址                     │
+│  └── Build ID                   │
+├─────────────────────────────────┤
+│  ExceptionStream（异常信息）      │
+│  ├── 信号类型                   │
+│  ├── 崩溃地址                   │
+│  └── 崩溃线程ID                 │
+└─────────────────────────────────┘
+```
+### LLVM libunwind
+```
+libunwind：LLVM 项目的栈展开库
+Android NDK 默认使用 libunwind 进行栈展开
+
+栈展开（Stack Unwinding）：
+从当前栈帧出发，逐帧向上追溯调用链
+最终得到完整的调用栈
+
+两种栈展开方式：
+┌──────────────────┬──────────────────┬──────────────────┐
+│                  │ Frame Pointer    │ DWARF/EH         │
+│                  │ 基于帧指针        │ 基于调试信息      │
+├──────────────────┼──────────────────┼──────────────────┤
+│ 速度             │ 快               │ 慢               │
+│ 准确性           │ 一般             │ 高               │
+│ 需要编译选项     │ -fno-omit-frame- │ 默认支持          │
+│                  │ pointer          │                  │
+│ Android默认      │ 否（优化掉了）    │ 是               │
+└──────────────────┴──────────────────┴──────────────────┘
+
+DWARF 栈展开原理：
+
+每个 so 文件包含 .eh_frame 段：
+记录了每个 PC（程序计数器）地址对应的
+CFA（Canonical Frame Address）计算规则
+
+展开步骤：
+① 获取当前 PC（程序计数器）
+② 在 .eh_frame 中查找 PC 对应的 FDE（Frame Description Entry）
+③ 根据 FDE 中的 CFA 规则计算上一帧的 SP（栈指针）
+④ 根据 CFA 恢复上一帧的寄存器（包括 PC）
+⑤ 重复 ①~④，直到无法继续展开
+
+ARM64 寄存器：
+├── PC（x30/LR）：程序计数器，当前执行地址
+├── SP（x31）：栈指针
+├── FP（x29）：帧指针（如果开启）
+└── LR（x30）：链接寄存器，保存返回地址
+```
 ### tombstone 分析
 ```
 # 获取 tombstone 文件
@@ -412,11 +519,173 @@ arm-linux-androideabi-addr2line \
     0x00034abc
 ```
 ### addr2line 符号还原
-## 热修复
-### Tinker
-### Robust
-### Sophix
-### 字节码插桩方案
+Native Crash 符号还原流程：   
+```
+线上 so（strip 后）：
+├── 没有调试信息（.debug_info/.debug_line）
+├── 没有符号表（.symtab）
+└── 只有最基本的运行时信息
+
+崩溃日志中的地址：
+#00 pc 00034abc  /data/app/com.xxx/lib/arm64/libnative.so
+
+需要还原为：
+#00 pc 00034abc  /data/app/.../libnative.so
+    com::xxx::DataManager::loadData(std::string const&)
+    DataManager.cpp:45
+
+还原步骤：
+① 保留带符号的 so 文件（构建时生成两份）
+   ├── libnative.so（strip后，用于发布）
+   └── libnative_unstripped.so（带符号，用于符号化）
+
+② 确认 so 的 Build ID 匹配
+   （确保符号文件和崩溃时的 so 是同一个版本）
+
+③ 使用 addr2line 还原
+```
+
+addr2line使用:  
+```
+# 基本用法
+# -f：显示函数名
+# -e：指定带符号的 so 文件
+# -C：demangle C++ 符号
+# -p：pretty print
+# addr：崩溃地址（相对地址）
+
+# 单个地址还原
+$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/\
+llvm-addr2line \
+    -f -C -e obj/local/arm64-v8a/libnative.so \
+    0x00034abc
+
+# 输出：
+# DataManager::loadData(std::string const&)
+# /src/DataManager.cpp:45
+
+# 批量还原（从文件读取地址）
+$NDK/llvm-addr2line -f -C \
+    -e libnative_unstripped.so \
+    $(cat crash_addrs.txt)
+
+# 注意：使用相对地址（relPc），不是绝对地址
+# 绝对地址 = so基地址 + 相对地址
+# addr2line 需要相对地址
+
+#!/usr/bin/env python3
+# symbolize.py：自动化符号还原脚本
+
+import subprocess
+import re
+import os
+import sys
+
+# NDK 路径
+NDK_PATH = os.environ.get('ANDROID_NDK', '/path/to/ndk')
+ADDR2LINE = f"{NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-addr2line"
+
+# 符号文件目录（按版本/ABI组织）
+SYMBOL_DIR = "./symbols"
+
+def get_symbol_file(so_name: str, build_id: str, abi: str) -> str:
+    """根据 so 名称和 Build ID 找到对应的符号文件"""
+    # 目录结构：symbols/{abi}/{build_id}/{so_name}
+    symbol_path = os.path.join(SYMBOL_DIR, abi, build_id, so_name)
+    if os.path.exists(symbol_path):
+        return symbol_path
+
+    # 降级：只按 so 名称查找（不验证 Build ID）
+    fallback = os.path.join(SYMBOL_DIR, abi, so_name)
+    return fallback if os.path.exists(fallback) else None
+
+def addr2line(symbol_file: str, address: str) -> tuple:
+    """调用 addr2line 还原单个地址"""
+    try:
+        result = subprocess.run(
+            [ADDR2LINE, '-f', '-C', '-p', '-e', symbol_file, address],
+            capture_output=True, text=True, timeout=5
+        )
+        output = result.stdout.strip()
+        # 解析输出：函数名 at 文件名:行号
+        if ' at ' in output:
+            func, location = output.split(' at ', 1)
+            return func.strip(), location.strip()
+        return output, ''
+    except Exception as e:
+        return f'addr2line failed: {e}', ''
+
+def symbolize_crash_log(crash_log: str, abi: str = 'arm64-v8a') -> str:
+    """符号化完整崩溃日志"""
+
+    # 匹配崩溃堆栈行
+    # 格式：#00 pc 00034abc  /path/to/libnative.so
+    frame_pattern = re.compile(
+        r'(#\d+)\s+pc\s+([0-9a-f]+)\s+(/[^\s]+\.so)(?:\s+$([^)]+)$)?'
+    )
+
+    lines = crash_log.split('\n')
+    result_lines = []
+
+    for line in lines:
+        match = frame_pattern.search(line)
+        if match:
+            frame_num = match.group(1)
+            address = match.group(2)
+            so_path = match.group(3)
+            so_name = os.path.basename(so_path)
+
+            # 查找符号文件
+            symbol_file = get_symbol_file(so_name, '', abi)
+
+            if symbol_file:
+                func_name, location = addr2line(symbol_file, f'0x{address}')
+                # 替换原始行，添加符号信息
+                symbolized = f"{line}\n      {func_name}"
+                if location and '?' not in location:
+                    symbolized += f"\n      {location}"
+                result_lines.append(symbolized)
+            else:
+                result_lines.append(f"{line}  [no symbol file]")
+        else:
+            result_lines.append(line)
+
+    return '\n'.join(result_lines)
+
+# 使用示例
+if __name__ == '__main__':
+    crash_log = sys.stdin.read()
+    print(symbolize_crash_log(crash_log))
+
+
+# 获取 so 文件的 Build ID
+# 确保符号文件和崩溃时的 so 版本匹配
+
+# 方法一：readelf
+readelf -n libnative.so | grep "Build ID"
+# 输出：Build ID: a1b2c3d4e5f6...
+
+# 方法二：objdump
+objdump -s -j .note.gnu.build-id libnative.so
+
+# 方法三：file 命令
+file libnative.so
+# 输出包含 BuildID
+
+# 在崩溃日志中也包含 Build ID
+# tombstone 中：
+# build_id: 'a1b2c3d4e5f6...'
+
+# 符号文件目录按 Build ID 组织：
+# symbols/
+# ├── arm64-v8a/
+# │   ├── a1b2c3d4/
+# │   │   └── libnative.so  ← 带符号的 so
+# │   └── b2c3d4e5/
+# │       └── libnative.so
+# └── armeabi-v7a/
+#     └── ...
+```
 # ANR
 ```
 ANR 类型与超时时间：
