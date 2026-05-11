@@ -971,3 +971,16 @@ launch(Dispatchers.Main) {
 // Thread.sleep → 系统调用，线程进入 WAITING 状态，让出CPU
 // delay → 向调度器注册回调，协程状态机保存，线程继续跑其他任务
 ```
+# Tips
+## Companion object
+用于在类内部创建静态成员，Kotlin 自身不直接支持传统意义上的静态方法或属性。  
+
+用途：  
+1.静态方法和属性：companion object 允许你在不创建类的实例的情况下，通过类名直接访问这些方法和属性。  
+2.实现接口：与普通对象一样，companion object 可以实现接口。  
+3.工厂方法和单例：常用于创建工厂方法或实现单例模式。  
+4.Java 兼容性：对于 Java 代码来说，companion object 中的成员看起来就像是传统的静态方法和属性。  
+
+实现：  
+底层是通过静态内部类实现，编译成其外部类的一个静态内部类，外部类拥有一个名为 Companion 的静态内部类的实例。  
+使用 @JvmStatic 注解，让companion object 中的某个成员真正成为 JVM 静态成员，Java 代码中访问这些成员时就不需要通过 Companion 实例。
