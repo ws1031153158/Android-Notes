@@ -1,7 +1,11 @@
 # SharedPreference
 1.以键值对形式存储数据（存为 xml 文件），一般用来存放各种参数（如 boolean 值、字符串等），记录某种状态或参数数值  
 2.apply 没有返回值，提交到内存，然后异步提交到硬盘，并覆盖上一次内存的值  
-3.commit 返回值标识是否成功，同步提交到硬盘
+3.commit 返回值标识是否成功，同步提交到硬盘  
+
+sharedPreferences 是一个 xml 的读取和存储操作，在使用前都会调用 getSharedPreferences 方法，这时它会去异步加载文件当中的配置文件，load 到内存当中，调用 get 或 put 属性时，如果 load 内存的操作没有执行完成，那么就会一直阻塞进行等待，都是拿同一把锁，它既然是 IO 操作，如果这文件存在很久，这个时间就会很长,如果项目比较大，有几十个类使用 SharedPreferences 文件，里面的文件也非常多   
+1.在 Application 中 MultiDex 之前加载 SharedPreferences（如果其他类在 Multidex 之前加载进行操作，会因为一些类不在主 dex 当中，导致崩溃，Sharedpreferences 是系统类，不会报错）   
+2.创建 SharedPreferences 并且保存到 Map 中，那么需要的时候可以在 SP_MAP 中直接获取
 ## ANR
 sp 只适合轻量级数据的存储，适合少量数据的持久化，存在 I/O 瓶颈，每次写入都是整个文件重新写入，不是增量写入，如果读写操作慢，就有可能导致 ANR   
 1.在 UI 线程中调用 getXXX 或 edit() 方法 （第一次调用 getSharedPreferences() 后）   
