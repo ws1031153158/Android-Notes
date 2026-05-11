@@ -464,7 +464,7 @@ android {
 }
 ```
 
-3.优化：  
+3.人工优化：  
 ```
 // ================================
 // 优化一：避免不必要的 companion object
@@ -480,14 +480,18 @@ class BadClass {
 // 生成：BadClass + BadClass$Companion（两个类！）
 
 // ✅ 使用顶层函数/属性
-const val TAG = "GoodClass"  // 顶层常量，直接内联
-fun createGoodClass() = GoodClass()  // 顶层函数
+const val TAG = "GoodClass"  // const 直接内联,无 getter，此外可以直接作为顶层常量，完全消除 Companion
+
+@JvmStatic
+fun createGoodClass() = GoodClass()  // 生成真正的静态方法，而非通过 Companion 访问
+
+object GoodClass {} // 单例，无 Companion
 
 // ================================
 // 优化二：避免 Kotlin 扩展函数滥用
 // ================================
 
-// 每个扩展函数都会生成一个静态方法
+// 每个扩展函数都会生成一个静态方法(带接收者参数的静态方法)
 // 大量扩展函数 = dex 方法数增加
 
 // ❌ 为每个类型都写扩展函数
@@ -661,15 +665,20 @@ inline fun <T> measureInline(block: () -> T): T {
 
 // 优化后（R8内联）
 fun calculate() = 3 // 直接计算结果，消除函数调用
+
+// ① 减少方法调用开销（无需压栈/出栈）
+// ② 减少方法数（内联后原方法可能被删除）
 ```
 
 3.常量折叠:  
 ```
 val MAX_SIZE = 100
 val DOUBLE_SIZE = MAX_SIZE * 2 // R8直接替换为 200
+// 效果：减少字段引用，dex 指令更少
+```
 
 4.无效代码消除:    
-// 无效代码消除
+```
 fun example(debug: Boolean = false) {
     if (debug) {
         // BuildConfig.DEBUG = false 时
@@ -719,6 +728,80 @@ class UserRepository {  // 不再继承 BaseRepository
 // 未使用的方法参数 → 直接删除
 fun process(data: String, unused: Int) { // unused被删除
     println(data)
+}
+```
+
+6.枚举优化：  
+```
+// ================================
+// 枚举的字节码开销
+// ================================
+
+// 原始枚举
+enum class Status {
+    LOADING, SUCCESS, ERROR, EMPTY
+}
+
+// 生成的字节码（等价于）：
+// public final class Status extends Enum<Status> {
+//     public static final Status LOADING = new Status("LOADING", 0);
+//     public static final Status SUCCESS = new Status("SUCCESS", 1);
+//     public static final Status ERROR = new Status("ERROR", 2);
+//     public static final Status EMPTY = new Status("EMPTY", 3);
+//     private static final Status[] $VALUES = {LOADING, SUCCESS, ERROR, EMPTY};
+//
+//     public static Status[] values() { ... }
+//     public static Status valueOf(String name) { ... }
+// }
+// 问题：
+// ① 每个枚举值都是一个对象（内存开销）
+// ② values() 每次调用都创建新数组（内存抖动）
+// ③ 方法数：values + valueOf + 每个枚举的方法
+
+// ================================
+// R8 的枚举优化（自动）
+// ================================
+// R8 会将简单枚举转换为 int 常量（EnumUnboxing）
+// 条件：枚举没有自定义方法/字段，没有被反射使用
+
+// R8 优化后（等价于）：
+// LOADING = 0, SUCCESS = 1, ERROR = 2, EMPTY = 3
+// 直接用 int，消除枚举类！
+
+// ================================
+// 开发者配合：避免阻止 R8 枚举优化
+// ================================
+
+// ❌ 阻止优化：枚举有自定义方法
+enum class Status(val displayName: String) {  // 自定义字段
+    LOADING("加载中"),
+    SUCCESS("成功"),
+    ERROR("失败"),
+    EMPTY("空数据");
+
+    fun isTerminal() = this == SUCCESS || this == ERROR  // 自定义方法
+}
+// R8 无法将这个枚举 unbox 为 int
+
+// ✅ 如果只需要状态标识，用 @IntDef 或 sealed class
+@IntDef(Status.LOADING, Status.SUCCESS, Status.ERROR, Status.EMPTY)
+@Retention(AnnotationRetention.SOURCE)
+annotation class Status {
+    companion object {
+        const val LOADING = 0
+        const val SUCCESS = 1
+        const val ERROR = 2
+        const val EMPTY = 3
+    }
+}
+// 完全没有枚举类，直接用 int 常量
+
+// 或者用 sealed class（类型安全 + 可以携带数据）
+sealed class UiState {
+    object Loading : UiState()
+    data class Success(val data: String) : UiState()
+    data class Error(val message: String) : UiState()
+    object Empty : UiState()
 }
 ```
 #### Dex 分包优化
@@ -794,6 +877,33 @@ WebP vs PNG/JPEG：
 ├── 图标/UI 图片（有透明度）：无损 WebP
 ├── 简单图形：VectorDrawable（SVG）
 └── 动画：Lottie（JSON 格式，比 GIF 小很多）
+```
+
+WebP 压缩：  
+```
+WebP 压缩原理：
+
+有损压缩（类似 JPEG）：
+├── 将图片分成 4×4 或 8×8 的块
+├── 对每个块做 DCT（离散余弦变换）
+├── 量化（丢弃人眼不敏感的高频信息）
+└── 熵编码（Huffman/算术编码）
+
+无损压缩（类似 PNG）：
+├── 预测编码：用相邻像素预测当前像素
+├── 变换：对预测误差做变换
+├── 颜色空间变换：RGB → YCbCr
+└── 熵编码
+
+WebP vs JPEG/PNG 压缩率：
+├── 有损 WebP vs JPEG（相同质量）：小 25%~34%
+├── 无损 WebP vs PNG：小 26%
+└── 带透明度 WebP vs PNG：小 26%（PNG 没有有损压缩选项）
+
+为什么 WebP 更小？
+├── 更先进的预测算法（比 JPEG 的 DCT 更精确）
+├── 更好的熵编码（算术编码 vs JPEG 的 Huffman）
+└── 支持有损+透明度（JPEG 不支持透明度）
 ```
 
 转换脚本：  
@@ -874,6 +984,56 @@ class ImageCompressPlugin : Plugin<Project> {
         }
     }
 }
+```
+
+VectorDrawable:  
+```
+原理：
+├── 基于 SVG 路径描述图形
+├── 运行时由 CPU 渲染成 Bitmap
+├── 任意尺寸无失真（矢量）
+└── 一个文件适配所有分辨率
+
+vs 多套 PNG：
+┌──────────────────┬──────────────────┬──────────────────┐
+│                  │ 多套 PNG         │ VectorDrawable   │
+├──────────────────┼──────────────────┼──────────────────┤
+│ 文件数量         │ 4套×N个图标      │ 1个文件           │
+│ 文件大小         │ 每套 10~50KB     │ 1~5KB            │
+│ 渲染质量         │ 固定分辨率        │ 任意尺寸无失真    │
+│ 渲染性能         │ 直接显示         │ 需要 CPU 渲染     │
+│ 适用场景         │ 复杂图片/照片     │ 图标/简单图形     │
+└──────────────────┴──────────────────┴──────────────────┘
+
+适合用 VectorDrawable 的场景：
+├── App 图标（各种尺寸都需要）
+├── 导航栏图标
+├── 功能图标（分享/收藏/设置等）
+└── 简单的装饰图形
+
+不适合的场景：
+├── 照片（复杂图片无法用路径描述）
+├── 复杂渐变图片
+└── 需要极高渲染性能的场景（VectorDrawable 有 CPU 开销）
+
+// 问题：VectorDrawable 每次绘制都需要 CPU 渲染
+// 解决：对于静态图标，缓存渲染结果
+
+// 方法一：在代码中预渲染为 Bitmap（一次性开销）
+fun vectorToBitmap(context: Context, vectorResId: Int, size: Int): Bitmap {
+    val drawable = AppCompatResources.getDrawable(context, vectorResId)!!
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    drawable.setBounds(0, 0, size, size)
+    drawable.draw(canvas)
+    return bitmap
+}
+
+// 方法二：使用 Hardware Layer 缓存
+imageView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+// VectorDrawable 渲染结果缓存为 GPU 纹理
+// 后续绘制直接用纹理，无需重新渲染
+
 ```
 ### 无用资源删除（shrinkResources）
 ```
@@ -964,8 +1124,305 @@ Android 7.0+ 要求 resources.arsc 不压缩
 （需要内存映射直接访问）
 ```
 ### 资源混淆（AndResGuard）
+```
+APK 资源系统：
+
+resources.arsc 结构：
+┌─────────────────────────────────────────────────────┐
+│  StringPool（字符串池）                               │
+│  ├── "res/layout/activity_main"                     │
+│  ├── "res/drawable/ic_launcher"                     │
+│  └── "res/layout/fragment_home"                     │
+├─────────────────────────────────────────────────────┤
+│  Package（包信息）                                    │
+│  └── TypeSpec（类型规格）                             │
+│      ├── layout → [activity_main, fragment_home...] │
+│      ├── drawable → [ic_launcher, ic_back...]       │
+│      └── string → [app_name, hello_world...]        │
+└─────────────────────────────────────────────────────┘
+
+资源访问流程：
+R.layout.activity_main（0x7F040001）
+  → resources.arsc 查找 0x7F040001
+  → 找到路径 "res/layout/activity_main.xml"
+  → 从 APK 中读取该文件
+
+AndResGuard 做了什么：
+① 将路径混淆：
+   "res/layout/activity_main" → "r/l/a"
+   "res/drawable/ic_launcher" → "r/d/a"
+   resources.arsc 中的路径字符串变短
+
+② 将文件重命名：
+   res/layout/activity_main.xml → r/l/a.xml
+
+③ 用 7zip 重新压缩 APK：
+   比系统默认的 zip 压缩率更高
+
+效果：
+├── resources.arsc 变小（路径字符串变短）
+├── APK 整体压缩率提升（7zip 更好）
+└── 资源路径被混淆（防止逆向分析）
+```
+
+配置：  
+```
+// build.gradle 完整配置
+apply plugin: 'AndResGuard'
+
+andResGuard {
+    // mapping 文件：保持混淆一致性（多版本间）
+    // 首次构建：null（自动生成）
+    // 后续构建：使用上次生成的 mapping
+    mappingFile = file("andresguard-mapping.txt")
+
+    use7zip = true
+    useSign = true
+    keepRoot = false  // 是否保留 res 根目录名
+
+    // 白名单：这些资源不混淆
+    // 原因：通过反射/字符串访问的资源必须保留原名
+    whiteList = [
+        // 桌面图标（系统通过固定路径访问）
+        "R.mipmap.ic_launcher",
+        "R.mipmap.ic_launcher_round",
+
+        // 通知图标（系统访问）
+        "R.drawable.ic_notification",
+
+        // 通过 Resources.getIdentifier() 访问的资源
+        // 例：resources.getIdentifier("ic_" + type, "drawable", packageName)
+        "R.drawable.ic_*",  // 通配符
+
+        // 第三方 SDK 要求保留的资源
+        "R.string.wechat_*",
+        "R.layout.umeng_*",
+    ]
+
+    // 压缩配置
+    compressFilePattern = [
+        "*.png",
+        "*.jpg",
+        "*.jpeg",
+        "*.gif",
+        "*.webp",
+        "*.xml",    // 布局文件也压缩
+    ]
+
+    // 7zip 配置
+    sevenzip {
+        artifact = 'com.tencent.mm:SevenZip:1.2.20'
+        // 或指定本地 7zip 路径
+        // path = "/usr/local/bin/7za"
+    }
+
+    // 最终 APK 输出路径
+    finalApkBackupPath = "${project.rootDir}/final_apk"
+}
+```
 ### 重复资源去重
+来源：  
+```
+重复资源来源：
+├── 不同分辨率目录下内容相同的图片
+│   drawable-hdpi/bg.png 和 drawable-xxhdpi/bg.png 内容一样
+├── 第三方库带来的重复资源
+│   多个库都包含相同的默认图标
+├── 开发者手动复制的资源
+│   ic_back_arrow.png 和 ic_arrow_left.png 内容完全相同
+└── 历史遗留的重复文件
+```
+
+去重：  
+```
+// 完整的重复资源检测工具
+import java.io.File
+import java.security.MessageDigest
+
+object DuplicateResourceDetector {
+
+    data class ResourceFile(
+        val file: File,
+        val md5: String,
+        val sizeBytes: Long,
+        val resType: String,   // layout/drawable/string
+        val qualifier: String  // hdpi/xxhdpi/zh/en
+    )
+
+    data class DuplicateGroup(
+        val md5: String,
+        val files: List<ResourceFile>,
+        val wastedBytes: Long  // 重复浪费的字节数
+    )
+
+    fun detectDuplicates(resDir: File): List<DuplicateGroup> {
+        // 1. 收集所有资源文件
+        val allFiles = resDir.walkTopDown()
+            .filter { it.isFile }
+            .filter { it.extension in listOf("png", "jpg", "webp", "xml", "9.png") }
+            .map { file ->
+                val md5 = calculateMd5(file)
+                val parts = file.parentFile.name.split("-")
+                ResourceFile(
+                    file = file,
+                    md5 = md5,
+                    sizeBytes = file.length(),
+                    resType = parts[0],
+                    qualifier = parts.drop(1).joinToString("-")
+                )
+            }
+            .toList()
+
+        // 2. 按 MD5 分组
+        val groups = allFiles.groupBy { it.md5 }
+
+        // 3. 找出有重复的组
+        return groups
+            .filter { (_, files) -> files.size > 1 }
+            .map { (md5, files) ->
+                DuplicateGroup(
+                    md5 = md5,
+                    files = files,
+                    wastedBytes = files.sumOf { it.sizeBytes } - files[0].sizeBytes
+                )
+            }
+            .sortedByDescending { it.wastedBytes }
+    }
+
+    fun generateReport(duplicates: List<DuplicateGroup>): String {
+        val totalWasted = duplicates.sumOf { it.wastedBytes }
+        val sb = StringBuilder()
+
+        sb.appendLine("=== 重复资源报告 ===")
+        sb.appendLine("共发现 ${duplicates.size} 组重复资源")
+        sb.appendLine("总浪费空间：${totalWasted / 1024}KB")
+        sb.appendLine()
+
+        duplicates.forEach { group ->
+            sb.appendLine("MD5: ${group.md5} (浪费 ${group.wastedBytes / 1024}KB)")
+            group.files.forEach { file ->
+                sb.appendLine("  ${file.file.relativeTo(file.file.parentFile.parentFile)}")
+            }
+            sb.appendLine()
+        }
+
+        return sb.toString()
+    }
+
+    fun removeDuplicates(
+        duplicates: List<DuplicateGroup>,
+        strategy: DeduplicateStrategy = DeduplicateStrategy.KEEP_HIGHEST_DENSITY
+    ) {
+        duplicates.forEach { group ->
+            val filesToKeep = when (strategy) {
+                DeduplicateStrategy.KEEP_HIGHEST_DENSITY -> {
+                    // 保留分辨率最高的版本
+                    listOf(group.files.maxByOrNull { densityScore(it.qualifier) }!!)
+                }
+                DeduplicateStrategy.KEEP_NODPI -> {
+                    // 如果有 nodpi 版本，只保留它
+                    group.files.filter { it.qualifier == "nodpi" }
+                        .ifEmpty {
+                            listOf(group.files.maxByOrNull { densityScore(it.qualifier) }!!)
+                        }
+                }
+            }
+
+            // 删除不保留的文件
+            group.files
+                .filter { it !in filesToKeep }
+                .forEach { resourceFile ->
+                    println("删除重复资源: ${resourceFile.file.path}")
+                    resourceFile.file.delete()
+                }
+        }
+    }
+
+    private fun densityScore(qualifier: String): Int = when {
+        qualifier.contains("xxxhdpi") -> 4
+        qualifier.contains("xxhdpi") -> 3
+        qualifier.contains("xhdpi") -> 2
+        qualifier.contains("hdpi") -> 1
+        qualifier.contains("nodpi") -> 5  // nodpi 优先级最高（适配所有密度）
+        qualifier.isEmpty() -> 0           // 默认目录
+        else -> -1
+    }
+
+    private fun calculateMd5(file: File): String {
+        val md = MessageDigest.getInstance("MD5")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                md.update(buffer, 0, read)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    enum class DeduplicateStrategy {
+        KEEP_HIGHEST_DENSITY,
+        KEEP_NODPI
+    }
+}
+
+// 使用
+fun main() {
+    val resDir = File("src/main/res")
+    val duplicates = DuplicateResourceDetector.detectDuplicates(resDir)
+    println(DuplicateResourceDetector.generateReport(duplicates))
+
+    // 确认后执行去重
+    DuplicateResourceDetector.removeDuplicates(duplicates)
+}
+```
 ### 语言/分辨率裁剪
+语言：  
+```
+// build.gradle
+android {
+    defaultConfig {
+        // 只保留中文和英文
+        // 其他语言（法语/德语/日语等）的 strings.xml 全部删除
+        resConfigs "zh", "zh-rCN", "zh-rTW", "en"
+    }
+}
+
+// 效果分析：
+// 第三方库（如 Google Play Services）包含 80+ 种语言的字符串
+// 裁剪后只保留 zh 和 en
+// 通常可以减少 500KB~2MB
+
+// 注意：
+// ① 只影响字符串资源（strings.xml）
+// ② 不影响图片/布局资源
+// ③ 如果 App 支持多语言，需要保留对应语言
+```
+
+分辨率：  
+```
+android {
+    defaultConfig {
+        // 只保留高密度资源
+        // 现代手机基本都是 xxhdpi（480dpi）或 xxxhdpi（640dpi）
+        resConfigs "xxhdpi", "xxxhdpi"
+
+        // 系统会自动缩放：
+        // 如果设备是 xhdpi，但没有 xhdpi 资源
+        // 系统会用 xxhdpi 资源缩小显示
+        // 视觉效果稍有影响，但可以接受
+    }
+}
+
+// 更激进：只保留 xxhdpi
+// resConfigs "xxhdpi"
+// 减少约 25% 的图片资源大小
+
+// 注意：
+// ① ldpi/mdpi 设备（老设备）会用 xxhdpi 资源缩小，可能有性能影响
+// ② 如果 App 有大量低端机用户，谨慎使用
+// ③ 矢量图不受影响（VectorDrawable 适配所有密度）
+```
 ## so 库优化
 ### ABI 过滤（只保留 arm64-v8a）
 ```
@@ -1160,8 +1617,117 @@ set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} \
 add_library(mylib SHARED native.cpp)
 ```
 ### 合并 so
+问题：  
+```
+多个小 So 文件的开销
+
+每个 So 文件的固定开销：
+├── ELF 文件头：约 64 字节
+├── 段表（Section Header Table）：每个段 64 字节
+├── 动态链接信息（.dynamic）：约 1KB
+├── 符号表（.dynsym）：每个导出符号约 24 字节
+└── 字符串表（.dynstr）：符号名字符串
+
+如果有 10 个小 So，每个 100KB：
+├── 10 × 固定开销 ≈ 10 × 5KB = 50KB 额外开销
+├── 10 次 dlopen 调用（加载时间增加）
+└── 10 个独立的符号表（内存占用增加）
+
+合并后：
+├── 1 次 dlopen
+├── 1 个符号表
+└── 固定开销只有 1 份
+```
+
+实现：  
+```
+# CMakeLists.txt：将多个模块合并为一个 So
+
+cmake_minimum_required(VERSION 3.18.1)
+project("myapp")
+
+# 原来：多个独立的 So
+# add_library(module_network SHARED network.cpp)
+# add_library(module_crypto SHARED crypto.cpp)
+# add_library(module_image SHARED image.cpp)
+# add_library(module_audio SHARED audio.cpp)
+
+# 优化：合并为一个 So
+add_library(
+    myapp_native  # 合并后的 So 名称
+    SHARED
+    # 所有模块的源文件
+    network/network.cpp
+    network/http_client.cpp
+    crypto/aes.cpp
+    crypto/rsa.cpp
+    image/decoder.cpp
+    image/encoder.cpp
+    audio/player.cpp
+    audio/recorder.cpp
+)
+
+target_link_libraries(
+    myapp_native
+    android
+    log
+    z
+    OpenSLES
+)
+
+# 只导出必要的 JNI 函数（隐藏内部符号）
+# 减少符号表大小
+set_target_properties(myapp_native PROPERTIES
+    CXX_VISIBILITY_PRESET hidden      # 默认隐藏所有符号
+    VISIBILITY_INLINES_HIDDEN ON
+)
+
+# 只有 JNI 函数需要导出（用 __attribute__((visibility("default"))) 标记）
+
+# CMakeLists.txt：将多个模块合并为一个 So
+
+cmake_minimum_required(VERSION 3.18.1)
+project("myapp")
+
+# 原来：多个独立的 So
+# add_library(module_network SHARED network.cpp)
+# add_library(module_crypto SHARED crypto.cpp)
+# add_library(module_image SHARED image.cpp)
+# add_library(module_audio SHARED audio.cpp)
+
+# 优化：合并为一个 So
+add_library(
+    myapp_native  # 合并后的 So 名称
+    SHARED
+    # 所有模块的源文件
+    network/network.cpp
+    network/http_client.cpp
+    crypto/aes.cpp
+    crypto/rsa.cpp
+    image/decoder.cpp
+    image/encoder.cpp
+    audio/player.cpp
+    audio/recorder.cpp
+)
+
+target_link_libraries(
+    myapp_native
+    android
+    log
+    z
+    OpenSLES
+)
+
+# 只导出必要的 JNI 函数（隐藏内部符号）
+# 减少符号表大小
+set_target_properties(myapp_native PROPERTIES
+    CXX_VISIBILITY_PRESET hidden      # 默认隐藏所有符号
+    VISIBILITY_INLINES_HIDDEN ON
+)
+
+# 只有 JNI 函数需要导出（用 __attribute__((visibility("default"))) 标记）
+```
 ## 架构优化
-### 插件化（功能动态下发）
 ### AAB（Android App Bundle）
 ```
 AAB（Android App Bundle）：
@@ -1277,16 +1843,158 @@ class MainActivity : AppCompatActivity() {
 ### D8
 ```
 // gradle.properties
-# 开启 D8 增量编译
-android.enableD8.desugaring=true
+// gradle.properties 完整优化配置
 
-# 开启 R8 完整模式
+# 开启 R8 完整模式（更激进的优化）
 android.enableR8.fullMode=true
 
-# 开启 dex 合并优化
-android.enableDexingArtifactTransform=true
+# 开启 D8 desugaring（语法糖脱糖，支持低版本）
+android.enableD8.desugaring=true
+
+# 并行编译（加快编译速度）
+org.gradle.parallel=true
+org.gradle.workers.max=4
+
+# 增量编译
+org.gradle.configureondemand=true
+
+# JVM 堆大小（避免编译 OOM）
+org.gradle.jvmargs=-Xmx4g -XX:MaxPermSize=512m \
+    -XX:+HeapDumpOnOutOfMemoryError \
+    -Dfile.encoding=UTF-8
+
+// build.gradle 编译优化
+android {
+    compileOptions {
+        // 开启核心库脱糖（支持 Java 8+ API 在低版本系统上运行）
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = '11'
+        // 开启 Kotlin 编译器优化
+        freeCompilerArgs += [
+            '-Xopt-in=kotlin.RequiresOptIn',
+            // 开启内联类优化
+            '-Xinline-classes',
+            // 开启协程优化
+            '-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi'
+        ]
+    }
+
+    buildFeatures {
+        // 关闭不需要的构建特性（减少生成代码）
+        buildConfig = false  // 如果不需要 BuildConfig
+        aidl = false         // 如果不用 AIDL
+        renderScript = false // 如果不用 RenderScript
+        resValues = false    // 如果不用 resValue
+        shaders = false      // 如果不用 shader
+    }
+}
+
+dependencies {
+    // 核心库脱糖依赖
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
+}
 ```
 ### Baseline Profile
+问题：  
+```
+Baseline Profile 解决的问题：
+
+Android 运行 Java/Kotlin 代码的方式：
+├── 解释执行（Interpreter）：最慢，逐条解释字节码
+├── JIT 编译（Just-In-Time）：运行时编译热点代码
+│   └── 首次运行慢，多次运行后变快
+└── AOT 编译（Ahead-Of-Time）：安装时编译为机器码
+    └── 运行最快，但编译耗时长
+
+问题：
+App 安装后，ART 不知道哪些代码是热点
+→ 首次启动：全部解释执行（慢！）
+→ 运行一段时间后：JIT 编译热点代码（变快）
+→ 用户体验：首次启动卡顿，后续流畅
+
+Baseline Profile 的作用：
+开发者提前告诉 ART：这些方法是热点代码
+→ 安装时提前 AOT 编译这些方法
+→ 首次启动就很快！
+
+效果：
+├── 启动速度提升 30%~40%
+├── 首帧渲染时间减少
+└── 减少 JIT 编译的 CPU 开销（省电）
+```
+
+生成：  
+```
+// 1. 添加依赖
+// build.gradle
+dependencies {
+    implementation 'androidx.profileinstaller:profileinstaller:1.3.1'
+}
+
+// macrobenchmark 模块的 build.gradle
+dependencies {
+    implementation 'androidx.benchmark:benchmark-macro-junit4:1.2.3'
+}
+
+// 2. 编写 Baseline Profile 生成器
+// macrobenchmark/src/androidTest/java/BaselineProfileGenerator.kt
+
+@RunWith(AndroidJUnit4::class)
+class BaselineProfileGenerator {
+
+    @get:Rule
+    val rule = BaselineProfileRule()
+
+    @Test
+    fun generate() {
+        rule.collect(
+            packageName = "com.xxx.app",
+            // 定义用户关键路径（这些路径的代码会被收集）
+            profileBlock = {
+                // 启动 App
+                pressHome()
+                startActivityAndWait()
+
+                // 模拟用户操作：首页加载
+                device.waitForIdle()
+
+                // 模拟滑动列表
+                val list = device.findObject(By.res("com.xxx.app:id/recycler_view"))
+                list.fling(Direction.DOWN)
+                device.waitForIdle()
+
+                // 模拟点击进入详情页
+                val firstItem = device.findObject(By.res("com.xxx.app:id/item_title"))
+                firstItem?.click()
+                device.waitForIdle()
+
+                // 模拟返回
+                device.pressBack()
+                device.waitForIdle()
+            }
+        )
+    }
+}
+
+// 3. 运行生成器
+// ./gradlew :macrobenchmark:generateBaselineProfile
+// 生成文件：app/src/main/baseline-prof.txt
+
+// baseline-prof.txt 内容示例：
+// HSPLcom/xxx/app/MainActivity;->onCreate(Landroid/os/Bundle;)V
+// HSPLcom/xxx/app/HomeFragment;->onViewCreated(Landroid/view/View;Landroid/os/Bundle;)V
+// HSPLcom/xxx/app/ArticleAdapter;->onBindViewHolder(...)V
+// ...
+// H = Hot（热点方法，AOT 编译）
+// S = Startup（启动时调用）
+// P = Post-startup（启动后调用）
+// L = Library（库方法）
+```
 ### 压缩算法选择
 ```
 // APK 中不同文件的压缩策略
