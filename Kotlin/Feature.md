@@ -464,7 +464,63 @@ Dispatchers.IO：
 Dispatchers.Unconfined：    
 由于Dispatchers.Unconfined未定义线程池，所以执行的时候默认在启动线程。遇到第一个挂起点，之后由调用resume的线程决定恢复协程的线程。    
 Dispatchers.Main：    
-指定执行的线程是主线程，在Android上就是UI线程，由于子Coroutine 会继承父Coroutine 的 context，所以为了方便使用，我们一般会在 父Coroutine 上设定一个 Dispatcher，然后所有 子Coroutine 自动使用这个 Dispatcher。    
+指定执行的线程是主线程，在Android上就是UI线程，由于子Coroutine 会继承父Coroutine 的 context，所以为了方便使用，我们一般会在 父Coroutine 上设定一个 Dispatcher，然后所有 子Coroutine 自动使用这个 Dispatcher。 
+### 调度器设计
+```
+// ================================
+// 统一的调度器管理
+// 便于测试和替换
+// ================================
+
+interface AppDispatchers {
+    val main: CoroutineDispatcher
+    val io: CoroutineDispatcher
+    val default: CoroutineDispatcher
+    val unconfined: CoroutineDispatcher
+}
+
+class DefaultAppDispatchers : AppDispatchers {
+    override val main = Dispatchers.Main
+    override val io = Dispatchers.IO
+    override val default = Dispatchers.Default
+    override val unconfined = Dispatchers.Unconfined
+}
+
+// 测试用：可以替换为 TestCoroutineDispatcher
+class TestAppDispatchers : AppDispatchers {
+    override val main = UnconfinedTestDispatcher()
+    override val io = UnconfinedTestDispatcher()
+    override val default = UnconfinedTestDispatcher()
+    override val unconfined = UnconfinedTestDispatcher()
+}
+
+// ================================
+// 任务优先级调度
+// ================================
+class PriorityTaskScheduler(
+    private val dispatchers: AppDispatchers
+) {
+    // 高优先级：用户直接触发的操作（点击/搜索）
+    // 使用独立的调度器，不被低优先级任务阻塞
+    private val highPriorityDispatcher = Dispatchers.IO.limitedParallelism(4)
+
+    // 低优先级：后台预加载/数据同步
+    // 限制并发数，避免占用太多资源
+    private val lowPriorityDispatcher = Dispatchers.IO.limitedParallelism(2)
+
+    // 高优先级任务
+    fun <T> launchHighPriority(
+        scope: CoroutineScope,
+        block: suspend () -> T
+    ): Deferred<T> = scope.async(highPriorityDispatcher) { block() }
+
+    // 低优先级任务
+    fun launchLowPriority(
+        scope: CoroutineScope,
+        block: suspend () -> Unit
+    ): Job = scope.launch(lowPriorityDispatcher) { block() }
+}
+```
 ## Suspend
 简单来说：  
 1.suspend 函数 = 状态机  
@@ -726,6 +782,91 @@ fastFlow
 Flow   = 水管  
 emit   = 往水管里放水  
 collect = 在水管末端接水  
+### 数据流设计
+```
+// ================================
+// 多数据源合并：并行请求，合并结果
+// ================================
+
+class HomeViewModel(
+    private val articleRepo: ArticleRepository,
+    private val bannerRepo: BannerRepository,
+    private val userRepo: UserRepository
+) : ViewModel() {
+
+    data class HomeState(
+        val banners: List<Banner> = emptyList(),
+        val articles: List<Article> = emptyList(),
+        val userInfo: UserInfo? = null,
+        val isLoading: Boolean = false,
+        val error: String? = null
+    )
+
+    private val _state = MutableStateFlow(HomeState())
+    val state = _state.asStateFlow()
+
+    fun loadHomePage() {
+        viewModelScope.launch {
+            _state.update { it.copy(isLoading = true) }
+
+            // 并行请求三个接口（不是串行！）
+            val bannersDeferred = async(Dispatchers.IO) {
+                runCatching { bannerRepo.getBanners() }
+            }
+            val articlesDeferred = async(Dispatchers.IO) {
+                runCatching { articleRepo.getArticles(0) }
+            }
+            val userDeferred = async(Dispatchers.IO) {
+                runCatching { userRepo.getCurrentUser() }
+            }
+
+            // 等待所有请求完成
+            val banners = bannersDeferred.await()
+            val articles = articlesDeferred.await()
+            val user = userDeferred.await()
+
+            // 合并结果，一次性更新 State
+            _state.update {
+                it.copy(
+                    isLoading = false,
+                    banners = banners.getOrDefault(emptyList()),
+                    articles = articles.getOrDefault(emptyList()),
+                    userInfo = user.getOrNull(),
+                    // 只有全部失败才显示错误
+                    error = if (banners.isFailure && articles.isFailure) {
+                        "加载失败，请重试"
+                    } else null
+                )
+            }
+        }
+    }
+
+    // ================================
+    // 搜索防抖：避免每次输入都请求
+    // ================================
+    private val searchQuery = MutableStateFlow("")
+
+    val searchResults: StateFlow<List<Article>> = searchQuery
+        .debounce(300)              // 300ms 防抖
+        .filter { it.length >= 2 } // 至少2个字符才搜索
+        .distinctUntilChanged()    // 相同查询不重复请求
+        .flatMapLatest { query ->  // 取消上一次搜索，只保留最新
+            flow {
+                emit(articleRepo.search(query))
+            }.catch { emit(emptyList()) }
+        }
+        .flowOn(Dispatchers.IO)
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    fun onSearchQueryChanged(query: String) {
+        searchQuery.value = query
+    }
+}
+```
 ### Tips
 1.flow 是冷流，当观察者开始订阅时，才触发 emit（每次 collect 都重新执行生产逻辑，没有 collect 就不生产），rxJava 是一旦数据产生就会推送给所有观察者。  
 2.可以使用 buffer 操作符添加缓存区，配合 onEach 进行流的中间处理，此外还可使用 conflate 保证只传递最新数据，来尽量避免背压。  
