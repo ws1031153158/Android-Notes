@@ -220,7 +220,7 @@ class ArticleListViewModel(
     private val _effect = Channel<ArticleListEffect>(Channel.BUFFERED)
     val effect: Flow<ArticleListEffect> = _effect.receiveAsFlow()
 
-    // 处理用户意图
+    // 处理 Intent
     fun dispatch(intent: ArticleListIntent) {
         when (intent) {
             is ArticleListIntent.LoadFirstPage -> loadFirstPage()
@@ -237,7 +237,7 @@ class ArticleListViewModel(
 
         viewModelScope.launch {
             // 更新状态：开始加载
-            updateState { copy(isLoading = true, error = null) }
+            updateState { copy(isLoading = true, error = null) } // StateFlow 发射新值（去重：和上一个 State 不同才发射）
 
             repository.getArticles(page = 0)
                 .onSuccess { articles ->
@@ -390,6 +390,12 @@ class ArticleListFragment : Fragment() {
                 binding.recyclerView.scrollToPosition(0)
         }
     }
+
+    private void onClick() {
+      view 发送 Intent
+    }
+
+// 如果是 Compose，collectAsStateWithLifecycle 收到新值，触发重组
 }
 ```
 # 插件化
