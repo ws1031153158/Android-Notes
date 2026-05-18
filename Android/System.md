@@ -21,15 +21,16 @@ input 核心是 InputReader 和 InputDispatcher，InputReader 和 InputDispatche
 ## main
 完成资源的预加载，通过 Native 方法 fork 出系统服务（子线程中反射创建 ActivityThread，并调用其 main 方法，注意，这里的线程是应用进程的 binder 线程），为 Launcher 等启动做准备，新进程会继承 Zygote 虚拟机、类加载器等资源，避免重新加载，最后启动 Loop 开启监听
 ## 为何使用 Socket 不使用 Binder
-1.时序：Binder 驱动进程早于 init  进程加载，所需 service 早于 Zygote，但无法保证 Zygote 注册时已经初始化完成    
-2.效率：使用 LocalSocket，减少了数据验证等环节   
-3.Binder 拷贝：fork 子进程会拷贝 Binder 对象，占用空间，且无法释放（成对存在，分为 C/S 端，释放 Server 引用需要释放 C 端对象，导致失去 binder ），使用 Socket 应用进程（C 端）会主动关闭   
+1.多线程冲突：Binder 依赖线程池处理并发请求，而fork只会复制当前调用线程（主线程），工作线程不会复制，但子进程会继承父进程的Binder状态（各种锁、任务队列等），其他工作线没有复制会有异常（如死锁，只有锁但没线程）。  
+2.时序问题： Binder需要向SystemServer注册，但SystemServer是Zygote后续孵化的。  
+3.过度设计：Binder内部机制复杂，而进程创建是低频高开销的行为。  
+4.内存问题：子进程复制父进程Binder各种对象，这些无用对象会占用内存，且没有对应机制单纯去清理子进程Binder内容。  
 # Window
 ## foundation
 Window 是个抽象类，实现类为 PhoneWindow。Window 是分层级的：系统 Window（2000-2999，需要权限才能创建，如 Toast、状态栏）、子 Window（1000-1999，需要父 Window，不能单独存在，如 Dialog）和应用 Window（1-99，对应一个 Activity），层级大的覆盖在层级小的上面。
-Window 是一种概念，具体以 View 的形式存在（一般为 DecorView），通过 ViewRootImpl 与 View 联系，一个 Window 对应一个 ViewTree（控制 View 显示层级），Window 会拦截并分发事件给 View。
+Window 是一种容器，具体以 View 的形式存在（一般为 DecorView），通过 ViewRootImpl 与 View 联系，一个 Window 对应一个 ViewTree（控制 View 显示层级），Window 会拦截并分发事件给 View。
 ## WindowManager
-访问 Window 的入口，实现类为 WindowManagerImpl，WindowManagerImpl 又将具体实现委托给 WindowManagerGlobal（进程单例），通过 WM 访问 WMS 进行 add、remove、update 等操作，此过程为 IPC 过程。
+访问 Window 的入口，位于应用进程，实现类为 WindowManagerImpl，WindowManagerImpl 又将具体实现委托给 WindowManagerGlobal（进程单例），通过 WM 访问 WMS 进行 add、remove、update 等操作，此过程为 IPC 过程。
 ## WindowConfiguration
 Configuration 是用来保存系统的各项配置的类，如网络运营商配置、屏幕参数配置、显示模式配置等，其中 windowConfiguration 就是保存的窗口相关的配置。  
  WindowConfiguration 里有两个主要 Rect 区域：  
