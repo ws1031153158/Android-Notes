@@ -139,8 +139,9 @@ relayoutWindow (从 WMS 申请 window layout， 创建 sc 并通过他创建 BBQ
 他可以理解为是一个平面，即每个窗口是一个平面，每个平面对应一段内存，即所谓的屏幕缓冲区，缓冲区大小取决于窗口大小，即宽高（一般为宽*高）。  
 接受多个源（有显示界面）的数据缓冲（BufferQueue，DeQueue 取出 -> Queue 放回），进行合成（acquireBuffer 获取，releaseBuffer 放回）：  
 1.不会在应用每次提交缓冲区时都执行操作，在显示设备准备好接收新的缓冲区时（VSYNC 信号到达）才会唤醒，遍历层列表寻找新缓冲区。如果找到会获取该缓冲区，否则继续使用以前的缓冲区。  
-2.SurfaceFlinger 必须始终显示内容，会保留一个缓冲区，如果在某个层上没有提交缓冲区，则该层会被忽略。  
-3.在收集可见层的所有缓冲区后会询问 Hardware Composer 如何进行合成
+2.SurfaceFlinger 必须始终显示内容，会保留一个缓冲区，如果在某个层上没有提交缓冲区，则该层会被忽略。   
+3.根据窗口的 Z-order 序列，计算每个图层哪些部分是可见的，哪些部分被遮挡了（即计算 VisibleRegion 和 DirtyRegion）。这样在刷新时，可以只更新发生变化的“脏区域”，从而提升性能。  
+4.在收集可见层的所有缓冲区后会询问 Hardware Composer 如何进行合成
 ## Simple Process
 1.APK 需要创建窗口时，会通过 WM.addView 创建一个 ViewRoot（ViewRootImpl） 对象，其中会通过 SF 无参构造函数创建 SF 对象，此时只是一个空壳（窗口需初始化后才对应一个屏幕显示的窗口，本质是给 SF 分配一段屏幕缓冲区的内存），需要向 WMS 请求（将空对象传给 WMS），返回一个完整对象。  
 2.WMS 收到请求后，通过 SF 的 JNI 调用到 SF_client 驱动，请求 SF 进程创建指定窗口，SF 创建一段屏幕缓冲区并关联该窗口，将地址返回给 WMS，WMS 通过此地址初始化 SF 对象 返回给 APK。  
@@ -154,7 +155,10 @@ Activity 初始化流程中，ViewRootImpl 完成了对界面的 measure、layou
 UI 线程利用 RenderProxy 向 RenderThread 线程发送一个任务请求，RenderThread 被唤醒，开始渲染，大致流程如下：  
 1.遍历 View 树上每一个命令节点，执行 prepareTreeImpl 函数，实现同步绘制命令树的操作  
 2.调用 OpenGL 库 API 使用 GPU，按照构建好的绘制命令完成界面的渲染  
-3.将前面已经绘制渲染好的图形缓冲区 Binder 上帧给 SurfaceFlinger 合成和显示
+3.将前面已经绘制渲染好的图形缓冲区 Binder 上帧给 SurfaceFlinger 合成
+4.SurfaceFlinger  从各个 App 的 BufferQueue（缓冲区队列）中，取出它们已经画好的画面（Buffer）,按照 Z-order、透明度（Alpha）、位置（Position）等属性，把图层叠在一起  
+5.决定是用HWC（硬件合成器,直接读取内存把图层物理叠加到屏幕上）还是GPU(有复杂的特效，需要绘制各种图层纹理)来完成最终的叠加    
+6.合成好的最终一帧画面，交给显示设备（Display）展示
 ## Tips
 1.SF 本质上只表示一个平面，而不是一段数据，Android 使用 Skia 绘图驱动库（C/C++）进行各种平面绘制。  
 2.SF 包含 lockCanvas 函数，APK 通过此函数返回的 Canvas 对象的各种绘制函数完成平面绘制。
