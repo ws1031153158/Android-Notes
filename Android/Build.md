@@ -31,6 +31,29 @@ class DefensorPlugin : Plugin<Project> {
 7.插件在这里注册 extension、任务、回调
 8.到执行阶段，真正跑被注册/挂钩的任务
 ```
+### Extension
+配置阶段的数据容器 + DSL 映射对象:  
+1.插件 apply() 时，调用 extensions.create(...) 注册 extension 对象  
+2.Gradle 在配置阶段执行 build 脚本，defensor { ... } 会给这个对象赋值(对外暴露可配置参数（让用户不用改插件源码）)  
+3.在 afterEvaluate（配置完成后），插件读取 extension 的最终值(把构建策略参数化（开关、白名单、扫描范围等)    
+4.再把值写入任务/全局配置（例如你们的 parseConfig -> DefensorConfig），执行阶段按这些值运行(把“配置期输入”传给“执行期任务”)    
+```
+defensor {
+    enable = true
+    enableApicheck = true
+    abortOnError = true
+}
+```
+## aapt
+Android Asset Packaging Tool，是 Android 构建链里处理资源的工具（现在主要是 aapt2）:  
+1.编译资源：把 res 目录下 XML、图片等编译成中间格式  
+2.链接资源：合并资源、生成资源表、生成 R 相关产物，并参与最终打包流程  
+### aapt_rules.txt
+aapt/aapt2 根据资源生成的“keep 规则文件”,告诉 ProGuard/R8：这些类虽然可能没有明显 Java 代码引用，但被资源/Manifest用到了，不能被误删:  
+```
+注释：来自哪个资源（如 # view res/layout/...、# view AndroidManifest.xml）
+规则：-keep class xxx { ... }
+```
 ## Transform
 Gradle 构建流程中，允许开发者对编译后的 class 文件（字节码）或资源进行自定义处理的一个阶段。这个机制主要通过 Transform API 实现，常用于字节码插桩、代码分析、自动生成代码等场景   
 ### Transform API 简介
