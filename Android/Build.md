@@ -6,6 +6,31 @@
 ## Task 和 doFirst/doLast
 doFirst：task 执行前插入逻辑  
 doLast：task 执行后插入逻辑  
+## Plugin
+Plugin<Project> 是 Gradle 的二进制插件接口，你可以把它理解为：“当插件被应用到某个 Project 时，Gradle 会回调你一次，让你去配置这个项目。”  
+```
+class DefensorPlugin : Plugin<Project> {
+    override fun apply(project: Project) {
+        // 这里写插件逻辑
+    }
+}
+
+// Plugin<Project>：模块/工程插件（最常见）
+// Plugin<Settings>：作用在 settings.gradle
+// Plugin<Gradle>：作用在整个 Gradle 实例（更底层）
+```
+
+流程：  
+```
+1.业务工程写 apply plugin: 'defensor'（或 plugins { id(...) }）
+2.Gradle 根据插件 id 找到描述文件
+3.META-INF/gradle-plugins/defensor.properties
+4.读取 implementation-class=com.meituan.gradle.defensor.DefensorPlugin
+5.反射实例化这个类
+6.调用 apply(project)（配置阶段）
+7.插件在这里注册 extension、任务、回调
+8.到执行阶段，真正跑被注册/挂钩的任务
+```
 ## Transform
 Gradle 构建流程中，允许开发者对编译后的 class 文件（字节码）或资源进行自定义处理的一个阶段。这个机制主要通过 Transform API 实现，常用于字节码插桩、代码分析、自动生成代码等场景   
 ### Transform API 简介
