@@ -54,6 +54,9 @@ aapt/aapt2 根据资源生成的“keep 规则文件”,告诉 ProGuard/R8：这
 注释：来自哪个资源（如 # view res/layout/...、# view AndroidManifest.xml）
 规则：-keep class xxx { ... }
 ```
+
+<img width="2212" height="2232" alt="image" src="https://github.com/user-attachments/assets/9de63ddf-a482-4a43-b82c-66ea9f82dd1e" />
+
 ## Transform
 Gradle 构建流程中，允许开发者对编译后的 class 文件（字节码）或资源进行自定义处理的一个阶段。这个机制主要通过 Transform API 实现，常用于字节码插桩、代码分析、自动生成代码等场景   
 ### Transform API 简介
