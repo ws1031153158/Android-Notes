@@ -172,6 +172,110 @@ Client调用时：
 ├── 异步调用（oneway）：Client立即返回
 └── 死亡通知：linkToDeath 监听Server死亡
 ```
+
+流程：  
+```
+系统状态：
+MediaPlayerService 已启动
+线程池初始状态：主线程 + Binder-Thread-1 共2个线程
+
+时间线：
+
+t=0ms
+  App-A（音乐播放器）调用 mediaPlayer.prepare()
+  └── 这是同步Binder调用
+  └── App-A主线程发起请求，挂起等待
+
+  Binder驱动：
+  └── 有空闲线程（Binder-Thread-1）
+  └── 唤醒 Binder-Thread-1 处理请求
+
+t=1ms
+  Binder-Thread-1 开始处理 App-A 的 prepare()
+  └── 需要解析音频文件，耗时50ms
+  └── 此时线程池：主线程空闲，Thread-1忙碌
+
+t=5ms
+  App-B（视频播放器）调用 mediaPlayer.prepare()
+  └── Binder驱动：主线程空闲
+  └── 唤醒主线程处理 App-B 的请求
+
+t=6ms
+  主线程 开始处理 App-B 的 prepare()
+  └── 也需要50ms
+  └── 此时线程池：主线程忙碌，Thread-1忙碌
+  └── 空闲线程数 = 0！
+
+t=10ms
+  App-C（直播App）调用 mediaPlayer.setDataSource()
+  └── Binder驱动：没有空闲线程！
+  └── 发送 BR_SPAWN_LOOPER 给 MediaPlayerService
+  └── MediaPlayerService 创建 Binder-Thread-2
+
+  Binder-Thread-2 创建完成
+  └── 调用 joinThreadPool() 加入线程池
+  └── 立即被分配处理 App-C 的请求
+
+t=51ms
+  Binder-Thread-1 处理完 App-A 的请求
+  └── 返回结果给 App-A
+  └── App-A 主线程被唤醒，prepare() 返回
+  └── Thread-1 重新进入等待状态
+
+最终线程池状态：
+主线程 + Thread-1 + Thread-2 = 3个线程
+根据后续负载决定是否继续创建
+```
+
+等待唤醒：  
+```
+而是基于 Linux 等待队列（wait_queue）：
+
+Binder线程
+    │
+    ▼
+ioctl(BINDER_WRITE_READ)
+    │
+    ▼  陷入内核态
+binder_thread_read()
+    │
+    ▼  检查是否有待处理请求
+    │  没有请求
+    ▼
+wait_event_interruptible(thread->wait, ...)
+    │
+    ▼  线程进入 TASK_INTERRUPTIBLE 状态
+       CPU不再调度此线程
+       完全不占用CPU资源！
+
+有新请求到来时：
+    │
+    ▼
+binder_transaction()
+    │
+    ▼
+wake_up_interruptible(&thread->wait)
+    │
+    ▼  线程状态变为 TASK_RUNNING
+    ▼  等待CPU调度
+    ▼  被调度后从 wait_event 返回
+    ▼  继续处理请求
+```
+
+oneway串行异步：  
+```
+同一个Client对同一个Server的oneway调用
+是串行的！不会并发！
+
+Client连续发3个oneway请求：
+    请求1 ──▶ 进入Server的异步队列
+    请求2 ──▶ 进入Server的异步队列
+    请求3 ──▶ 进入Server的异步队列
+
+Server处理：
+    处理请求1 → 处理请求2 → 处理请求3
+    严格按顺序，不并发
+```
 ## 完整流程
 1.准备阶段（Server启动时）：  
 ```
@@ -289,7 +393,23 @@ Client进程
 ## Server
 创建 service 并创建 AIDL（需要定义参数 in/out/inout，代表输入/输出/输入输出数据，指定数据流向，如 in 是 C 到 S） 和它的实现类，C 端获取 IBinder 转换给 AIDL 来调用方法
 ## Client
-绑定 service，重写 onServiceConnection，创建 binder 对象（AIDL.Stub.asInterface）
+绑定 service，重写 onServiceConnection，创建 binder 对象（AIDL.Stub.asInterface）  
+```
+    private var downloadService: IDownloadService? = null
+    
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, service: IBinder) {
+            // 获取代理对象
+            downloadService = IDownloadService.Stub.asInterface(service)
+            //  asInterface 判断：
+            //  同进程 → 直接返回Stub对象（无Binder开销）
+            //  跨进程 → 返回Proxy对象（走Binder）
+        }
+        override fun onServiceDisconnected(name: ComponentName) {
+            downloadService = null
+        }
+    }
+```
 ## Tips
 C 和 S 持有不同的对象，多次 IPC 过程 C 传给 S 同一个对象，binder 会生成不同的多个对象，但底层的 bidner 对象都是一个
 # Messenger
