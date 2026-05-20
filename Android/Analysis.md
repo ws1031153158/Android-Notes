@@ -36,9 +36,12 @@ tips：renderThread 对应硬件加速（默认开启），开启硬件加速后
 不为 0，App 先收到 Vsync 信号，进行一帧渲染，然 Offset 后，SurfaceFlinger 收到 Vsync 信号开始合成，这时如果 App 的 Buffer 已经 Ready ，那 SurfaceFlinger 这一次合成就可以包含 App 这一帧，用户也会早一点看到。
 ## ​Choreographer
 配合 Vsync ，给上层 App 渲染提供稳定的 Message 处理时机： Vsync 到来，系统对 Vsync 信号周期调整，控制每一帧绘制操作时机，Vsync 信号唤醒 Choreographer 来做 App 的绘制操作（通过 postCallback 设置的回调函数调用使用者）。  
-承上：接收和处理 App 的更新消息和回调，等 Vsync 到来统一处理。如集中处理 Input 、Animation、Traversal( measure、layout、draw ) ，判断卡顿掉帧情况，记录 CallBack 耗时等  
-启下：接收 Vsync 事件回调，请求 Vsync 信号  
-线程单例要和一个 Looper 绑定（内部有一个 Handler 所以需要绑定 Looper ），定义了一个 FrameCallback interface，当 Vsync 到来，doFrame 被调用，在固定的时间中断。
+承上：  
+接收和处理 App 的更新消息和回调，等 Vsync 到来统一处理。如集中按序处理callback（ Input 、Animation、Traversal( measure、layout、draw )） ，判断卡顿掉帧情况，记录 CallBack 耗时等    
+启下：  
+1.接收 Vsync 事件回调(onVsync回调中sendMesage通知UI Thread处理，之后post给自己进行doFrame处理一帧，也就是这里处理各种应用的callback，以及掉帧（onVsync和doFrame分别记录时间点）)  
+2.请求 Vsync 信号（scheduleVsync，有连续场景时触发，因为不是每一帧都需要绘制，有任务才请求，也就是有callback）  
+线程单例要和一个 Looper 绑定（内部有一个 Handler 所以需要绑定 Looper ），Activity.onResume后addView阶段获取单例（ViewRootImpl 维护一个 mChoreographer），定义了一个 FrameCallback interface，当 Vsync 到来，doFrame 被调用，在固定的时间中断。
 ### 流程
 应用一帧渲染的整体流程，从执行顺序的角度来看是从 Choreographer 收到 Vsync 开始，到 SurfaceFlinger/HWC 合成一帧结束（后面还包含屏幕显示部分）  
 ![image](https://github.com/user-attachments/assets/02ca4c5f-4096-49e6-ba34-fa01907fb8c0)  
