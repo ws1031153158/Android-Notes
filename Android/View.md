@@ -5,7 +5,7 @@ DecorView 也是个 View，具体为 FrameLayout，PhoneWindow中会持有一个
 ## ViewRootImpl
 继承ViewParent，管理子View的一些状态，接收WM回调后下发绘制命令，刷新布局等。  
 一个 Window 对应着一个 ViewRootImpl 和 一个 DecorView  
-内部维护一个windowSession（Binder对象），一个surfaceControl，通过这个binder对象将surface传递给WMS
+内部维护一个windowSession（Binder对象），一个surfaceControl（通过这个binder对象向WMS申请surface）
 ## addView
 动态向布局中添加子视图（可以是 viewGroup）  
 1.父布局需要已初始化，已经 setContentView  
@@ -13,7 +13,7 @@ DecorView 也是个 View，具体为 FrameLayout，PhoneWindow中会持有一个
 3.要注意添加的线程需要是主线程
 # draw
 ## process
-activity 在 onCreate 时调用 setContentView（最终走到PhoneWindow.setContentView），这一步将 layout 放入 window 中 DecorView 的 mContentParant(一个FrameLayout) 当中(DecorView为空则创建一个)，接着 AT 会继续执行 handleResumeActivity，这里会调用 wm.addView，此方法中创建一个 viewRootimpl 来对应 decorView（一对一），并通过 mRoot(ViewRootImpl).setView 进行关联，接下来就到了三大流程环节了（performMeasure、performLayout、performDraw）。首先会走一次 requestLayout，root 会调用 performMeasure，接着走到 decorView 的 measure 方法中进而调用 onMeasure 以及 child 的 onMeasure，后续的 layout 和 draw 按顺序执行。
+activity 在 onCreate 时调用 setContentView（最终走到PhoneWindow.setContentView），这一步将 layout 放入 window 中 DecorView 的 mContentParant(一个FrameLayout) 当中(DecorView为空则创建一个)，接着 AT 会继续执行 handleResumeActivity，这里会调用 WindowManager（WindowManagerGlobal）.addView，此方法中创建一个 viewRootimpl 来对应 decorView（一对一），并通过 mRoot(ViewRootImpl).setView 进行关联（Binder到WMS，申请一个surface），接下来就到了三大流程环节了（performMeasure、performLayout、performDraw）。首先会走一次 requestLayout，root 会调用 performMeasure，接着走到 decorView 的 measure 方法中进而调用 onMeasure 以及 child 的 onMeasure，后续的 layout 和 draw 按顺序执行，绘制完成后将结果接入surface的Canvas，最后提交SF合成。
 ## getWidth/getHeight/getMeasureWidth
 setContentView 在 onCreate 时执行，addView 在 onResume 时执行，所以这两个阶段无法获取宽高，可以通过 view.post 来拿。  
 getMeasureWidth 返回 MeasureSpec 的大小，因此它在 setMeasureDemention 后设置了 MeasureSpec 才有值，而 getWidth 是 mRight - mLeft，在 layout 中 setFrame 赋值。
