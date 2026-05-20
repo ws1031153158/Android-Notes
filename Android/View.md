@@ -4,7 +4,8 @@ activity 创建完成后 将 decorview 添加到 window 中，创建 ViewRootImp
 DecorView 也是个 View，具体为 FrameLayout，PhoneWindow中会持有一个DecorView
 ## ViewRootImpl
 继承ViewParent，管理子View的一些状态，接收WM回调后下发绘制命令，刷新布局等。  
-一个 Window 对应着一个 ViewRootImpl 和 一个 DecorView，Activity resume时，在addView阶段创建ViewRootImpl
+一个 Window 对应着一个 ViewRootImpl 和 一个 DecorView，Activity resume时，在addView阶段创建ViewRootImpl  
+内部维护一个windowSession（Binder对象），一个surfaceControl，通过这个binder对象将surface传递给WMS
 ## addView
 动态向布局中添加子视图（可以是 viewGroup）  
 1.父布局需要已初始化，已经 setContentView  
