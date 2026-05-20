@@ -30,10 +30,26 @@ tips：renderThread 对应硬件加速（默认开启），开启硬件加速后
 从左到右边，从上到下逐行扫描像素点，在屏幕刷新频率（帧率，fps，GPU一秒绘制的帧数）固定时，一个屏幕内数据来自 2 个不同帧（buffer 在显示过程中被修改），画面会出现撕裂，垂直同步就是为了解决此问题。  
 双缓存：绘制和显示器拥有各自  buffer，GPU 始终将完成一帧写入 Back Buffer，显示器使用 Frame Buffer，屏幕刷新时，Frame Buffer 不变，Back buffer 就绪后进行交换  
 三缓存：双缓冲基础上增加一个 Graphic Buffer，CPU 空闲时，Back Buffer 被占用，只能等待 GPU 后再写入，此时第三缓存提前准备好数据。  
-扫描完屏幕后，需要重新回到第一行进入下次循环，此时有一段时间空隙（VBI），进行缓存交换，Vsync 利用 VBI 出现的垂直同步脉冲来保证交换时间。
+扫描完屏幕后，需要重新回到第一行进入下次循环，此时有一段时间空隙（VBI），进行缓存交换，Vsync 利用 VBI 出现的垂直同步脉冲来保证交换时间。  
+
+```
+CPU阶段（主线程）：等VSYNC来了才开始执行
+  └── input / measure / layout / draw(记录)
+
+GPU阶段（RenderThread）：CPU完成后立即异步执行
+  └── 不等下一个VSYNC，尽快完成渲染
+  └── 完成后等下一个VSYNC信号才上屏（HW合成）
+```
 ### offset
 为 0， App 和 SurfaceFlinger 同时收到 Vsync 信号。  
 不为 0，App 先收到 Vsync 信号，进行一帧渲染，然 Offset 后，SurfaceFlinger 收到 Vsync 信号开始合成，这时如果 App 的 Buffer 已经 Ready ，那 SurfaceFlinger 这一次合成就可以包含 App 这一帧，用户也会早一点看到。
+
+```
+VSYNC-App 相位提前
+  └── App的VSYNC比SF的VSYNC早到一点
+  └── 给CPU留出足够时间处理input+渲染
+  └── 在SF的VSYNC到来时刚好渲染完成
+```
 ## ​Choreographer
 配合 Vsync ，给上层 App 渲染提供稳定的 Message 处理时机： Vsync 到来，系统对 Vsync 信号周期调整，控制每一帧绘制操作时机，Vsync 信号唤醒 Choreographer 来做 App 的绘制操作（通过 postCallback 设置的回调函数调用使用者）。  
 承上：  
