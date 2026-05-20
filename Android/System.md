@@ -41,6 +41,7 @@ Configuration 是用来保存系统的各项配置的类，如网络运营商配
 mWindowingMode 保存的是该配置下窗口的显示模式，例如全屏、分屏、浮动等模式。
 ## Window 显示
 ### 添加窗口
+Activity create阶段会new 一个window（PhoneWindow）
 1.app 端 activity resume 后，viewRootImpl 会通知 system server 添加窗口   
 2.新添加窗口默认为 NO_SURFACE，还没有绘制   
 ![image](https://github.com/user-attachments/assets/170b474e-b070-4427-b94b-33fea2a23bb0)  
@@ -71,6 +72,21 @@ Task、activityRecord、windowState 等都间接/直接继承 windowContainer，
 RootWindowContainer 是 WMS 管理所有窗口容器的根容器，系统中只存在一个，由 WMS 服务创建，但是会等待 ATMS 服务启动完成后再初始化，管理的是 DisplayContent（也是一个 windowContainer，对应着显示屏幕，对应唯一 ID，添加窗口时通过指定ID决定显示在哪个屏幕），每一个 DisplayContent 对应的是一个 Display 屏幕（包括物理屏幕和虚拟屏幕），同时实现了 DisplayListener 的接口，可以监听屏幕的添加、删除操作。
 ### WindowContainerTransaction
 表示 WindowContainer上的操作集合，一般配合 WindowContainerTransactionCallback 一起，接收包含同步操作结果的事务。相比 Transaction 是在 SurfaceControl 上的操作集合，WindowContainerTransaction 是在 WindowContainer 上的操作集合，如 setBound 等修改 windowContainer 属性以及层级（如将转换父容器或在当前父容器中的位置）的操作，传入 windowContainer 对应的 token 并发送到服务端，最后由 callback 返回结果给客户端
+## 自定义 Window
+```
+// 通过 WindowManager 添加自定义类型 Window
+val params = WindowManager.LayoutParams().apply {
+    type = WindowManager.LayoutParams.TYPE_APPLICATION  
+    // 系统级可用 TYPE_SYSTEM_ALERT / TYPE_ACCESSIBILITY_OVERLAY
+    flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+    width = 800
+    height = 600
+    x = 100; y = 100
+    format = PixelFormat.TRANSLUCENT
+}
+windowManager.addView(floatingView, params)
+```
 ## ShellTransition
 ### BlastSyncEngine
 ST 的核心，是 WMS 维护的一个成员对象，每次窗口事务切换都围绕他进行  
