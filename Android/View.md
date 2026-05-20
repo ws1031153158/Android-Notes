@@ -1,6 +1,7 @@
 # ViewRoot & DecorView
 ViewRoot 就是 ViewRootImpl，连接Window 和 View（这里是DecorView），三大流程都由 ViewRootImpl 完成。  
-activity 创建完成后 将 decorview 添加到 window 中，创建 ViewRootImpl 并建立和 decorview 的连接（root.setView）
+activity 创建完成后 将 decorview 添加到 window 中，创建 ViewRootImpl 并建立和 decorview 的连接（root.setView）  
+DecorView 也是个 View，具体为 FrameLayout，PhoneWindow中会持有一个DecorView
 ## addView
 动态向布局中添加子视图（可以是 viewGroup）  
 1.父布局需要已初始化，已经 setContentView  
