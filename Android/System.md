@@ -30,7 +30,7 @@ input 核心是 InputReader 和 InputDispatcher，InputReader 和 InputDispatche
 Window 是个抽象类，实现类为 PhoneWindow。Window 是分层级的：系统 Window（2000-2999，需要权限才能创建，如 Toast、状态栏）、子 Window（1000-1999，需要父 Window，不能单独存在，如 Dialog）和应用 Window（1-99，对应一个 Activity），层级大的覆盖在层级小的上面。
 Window 是一种容器，具体以 View 的形式存在（一般为 DecorView），通过 ViewRootImpl 与 View 联系，一个 Window 对应一个 ViewTree（控制 View 显示层级），Window 会拦截并分发事件给 View。
 ## WindowManager
-访问 Window 的入口，位于应用进程，实现类为 WindowManagerImpl（一个Activity对应一个WindowManagerImpl）.  
+访问 Window 的入口，位于应用进程，继承ViewManager（包括addView、removeView、updateViewLayout），实现类为 WindowManagerImpl（一个Activity对应一个WindowManagerImpl）.  
 WindowManagerImpl 将部分方法实现委托给 WindowManagerGlobal（进程单例,windowManagerImpl 维护一个本地对象），通过 WM 访问 WMS 进行 add、remove、update 等操作，此过程为 IPC 过程。
 ## WindowConfiguration
 Configuration 是用来保存系统的各项配置的类，如网络运营商配置、屏幕参数配置、显示模式配置等，其中 windowConfiguration 就是保存的窗口相关的配置。  
