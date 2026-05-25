@@ -40,6 +40,9 @@ GPU阶段（RenderThread）：CPU完成后立即异步执行
   └── 不等下一个VSYNC，尽快完成渲染
   └── 完成后等下一个VSYNC信号才上屏（HW合成）
 ```
+### 信号
+1.一次0-1变换为一次信号（max + 1）%2 来计算  
+2.Vsync-app不一定准（当然大部分情况下是和当前app一一对应的），如果app没有请求，其他app请求了，此时信号是其他app，具体需要看自身是否有onVsync回调
 ### offset
 为 0， App 和 SurfaceFlinger 同时收到 Vsync 信号。  
 不为 0，App 先收到 Vsync 信号，进行一帧渲染，然 Offset 后，SurfaceFlinger 收到 Vsync 信号开始合成，这时如果 App 的 Buffer 已经 Ready ，那 SurfaceFlinger 这一次合成就可以包含 App 这一帧，用户也会早一点看到。
