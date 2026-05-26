@@ -8,7 +8,34 @@
 继承 Thread，封装 Handler，实现 runnable 接口，创建 HT 对象等于创建 Thread（即新开一个工作线程） 对象加上设置线程优先级（构造函数传入线程名），run 方法中创建 looper（looper 创建 Handler）以及消息队列，为一个无限循环的方法，不需要时要调用 quit 终止线程。  
 通过 Handler 向 HT 消息队列发送消息来执行任务，主要用于 IntentService（抽象类，执行高优先级后台耗时任务，执行完毕自动停止，优先级高于一般线程（本身是 Service，但执行在工作线程），不易被杀死，封装了 Handler 和 HT（onCreate 中创建），每次启动调用 onStartCommand，接着调用 onStart（针对本身），由 Handler.sendMessage 发送消息，交给 HT 处理，将 intent 对象交给 onHandleIntent（执行结束调用 stopSelf）处理，内容和 startService 传递的 intent 一致，解析启动 IntentService 传递的参数）
 存在问题：在获得 HandlerThread 工作线程的 Looper 对象时存在一个同步的问题：只有当线程创建成功 & 其对应的 Looper 对象也创建成功后才能获得 Looper 的值，才能将创建的 Handler 与 工作线程的 Looper 对象绑定，从而将 Handler 绑定工作线程。  
-解决方案：即保证同步的解决方案 ，同步锁、wait 和 notifyAll，即 在 run 中成功创建 Looper 对象后，立即调用 notifyAll 通知 getLooper 中的 wait 结束等待 & 返回 run 中成功创建的 Looper 对象，使得 Handler 与该 Looper 对象绑定。
+解决方案：即保证同步的解决方案 ，同步锁、wait 和 notifyAll，即 在 run 中成功创建 Looper 对象后，立即调用 notifyAll 通知 getLooper 中的 wait 结束等待 & 返回 run 中成功创建的 Looper 对象，使得 Handler 与该 Looper 对象绑定。  
+```
+自己包装Thread也可实现HandlerThread效果：
+// HandlerThread源码（简化）
+class HandlerThread(name: String) : Thread(name) {
+    lateinit var looper: Looper
+
+    override fun run() {
+        Looper.prepare()           // 创建Looper
+        looper = Looper.myLooper()!!
+        synchronized(this) {
+            notifyAll()            // 通知looper已准备好
+        }
+        Looper.loop()              // 开始循环，阻塞在这里
+        // loop()返回 = quit()被调用 = 线程结束
+    }
+
+    fun quit() {
+        handler?.looper?.quit()
+    }
+}
+
+HandlerThread封装了：
+├── Looper.prepare()
+├── 线程同步等待Looper就绪
+└── getLooper()的等待逻辑
+    （如果Looper还没准备好会阻塞等待）
+```
 # Executor
 线程调度器，配合 ExecutorService（子类）使用，常用的子类有：  
 ThreadPoolExecutor：线程池调度，需要手动给定参数，如核心线程数，非核心线程数，超时计数，任务队列（有默认），自定义线程工厂（有默认）等  
