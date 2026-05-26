@@ -775,7 +775,7 @@ class ChartView(context: Context) : View(context) {
 }
 
 // ================================
-// 检测：自定义 GC 监控
+// 检测：线下 GC 监控
 // ================================
 object GCMonitor {
 
@@ -793,7 +793,7 @@ object GCMonitor {
     }
 
     private fun checkGCFrequency() {
-        val gcInfo = Debug.getRuntimeStat("art.gc.gc-count")
+        val gcCount = Debug.getRuntimeStat("art.gc.gc-count")
         val currentGCCount = gcInfo?.toIntOrNull() ?: return
 
         val gcDelta = currentGCCount - gcCount
@@ -801,6 +801,45 @@ object GCMonitor {
 
         if (gcDelta > 5) { // 1秒内GC超过5次
             Log.w("GCMonitor", "GC频繁：1秒内触发 $gcDelta 次GC，可能存在内存抖动")
+        }
+    }
+}
+
+// ================================
+// 检测：线上 GC 监控
+// ================================
+class GCMonitor {
+    private var lastGCCount = 0
+    private var lastCheckTime = 0L
+
+    fun start() {
+        Thread {
+            while (true) {
+                Thread.sleep(1000)  // 每秒检查
+                checkGCFrequency()
+            }
+        }.apply { isDaemon = true; start() }
+    }
+
+    private fun checkGCFrequency() {
+        val runtime = Runtime.getRuntime()
+        // 通过内存变化推断GC
+        val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+
+        // 记录内存采样点
+        memorySamples.add(usedMemory)
+
+        if (memorySamples.size >= 10) {
+            // 计算内存波动幅度
+            val max = memorySamples.max()
+            val min = memorySamples.min()
+            val fluctuation = max - min
+
+            if (fluctuation > THRESHOLD) {
+                // 内存波动大 → 可能内存抖动
+                report("内存抖动: 波动${fluctuation/1024}KB")
+            }
+            memorySamples.clear()
         }
     }
 }
