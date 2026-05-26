@@ -61,6 +61,11 @@ VSYNC-App 相位提前
 1.接收 Vsync 事件回调(onVsync回调中sendMesage通知UI Thread处理，之后post给自己进行doFrame处理一帧，也就是这里处理各种应用的callback，以及掉帧（onVsync和doFrame分别记录时间点）)  
 2.请求 Vsync 信号（scheduleVsync，有连续场景时触发，因为不是每一帧都需要绘制，有任务才请求，也就是有callback）  
 线程单例要和一个 Looper 绑定（内部有一个 Handler 所以需要绑定 Looper ），Activity.onResume后addView阶段获取单例（ViewRootImpl 维护一个 mChoreographer），定义了一个 FrameCallback interface，当 Vsync 到来，doFrame 被调用，在固定的时间中断。
+### 同步屏障
+1.scheduleVsync()时插入同步屏障  
+2.VSYNC回调是异步消息，优先执行  
+3.保证VSYNC回调不被普通消息延迟  
+4.doFrame()执行完后移除屏障
 ### 流程
 应用一帧渲染的整体流程，从执行顺序的角度来看是从 Choreographer 收到 Vsync 开始，到 SurfaceFlinger/HWC 合成一帧结束（后面还包含屏幕显示部分）  
 ![image](https://github.com/user-attachments/assets/02ca4c5f-4096-49e6-ba34-fa01907fb8c0)  
