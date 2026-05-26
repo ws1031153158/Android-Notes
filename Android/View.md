@@ -12,17 +12,60 @@ DecorView 也是个 View，具体为 FrameLayout，PhoneWindow中会持有一个
 2.已有父布局则不能重复被添加  
 3.要注意添加的线程需要是主线程
 # draw
-## process
+## 调用顺序
 activity 在 onCreate 时调用 setContentView（最终走到PhoneWindow.setContentView），这一步将 layout 放入 window 中 DecorView 的 mContentParant(一个FrameLayout) 当中(DecorView为空则创建一个)，接着 AT 会继续执行 handleResumeActivity，这里会调用 WindowManager（WindowManagerGlobal）.addView，此方法中创建一个 viewRootimpl 来对应 decorView（一对一），并通过 mRoot(ViewRootImpl).setView 进行关联（Binder到WMS，申请一个surface），接下来就到了三大流程环节了（performMeasure、performLayout、performDraw）。首先会走一次 requestLayout，root 会调用 performMeasure，接着走到 decorView 的 measure 方法中进而调用 onMeasure 以及 child 的 onMeasure，后续的 layout 和 draw 按顺序执行，绘制完成后将结果接入surface的Canvas，最后提交SF合成。
+## 绘制顺序
+```
+// View.draw()的绘制顺序
+fun draw(canvas: Canvas) {
+    // 1. 绘制背景
+    drawBackground(canvas)
+
+    // 2. 保存canvas层（如果需要fade边缘）
+    saveCount = canvas.save()
+
+    // 3. 绘制自身内容
+    onDraw(canvas)
+
+    // 4. 绘制子View
+    dispatchDraw(canvas)
+
+    // 5. 绘制装饰（前景/滚动条）
+    onDrawForeground(canvas)
+
+    // 6. 绘制焦点高亮（Android P+）
+    drawDefaultFocusHighlight(canvas)
+}
+
+注意事项：
+├── ViewGroup默认不调用onDraw
+│   需要setWillNotDraw(false)才会调用
+├── onDraw中不要创建对象（GC压力）
+└── 复杂绘制用硬件层缓存：
+    view.setLayerType(LAYER_TYPE_HARDWARE, null)
+    避免每帧重新绘制
+```
 ## getWidth/getHeight/getMeasureWidth
 setContentView 在 onCreate 时执行，addView 在 onResume 时执行，所以这两个阶段无法获取宽高，可以通过 view.post 来拿。  
 getMeasureWidth 返回 MeasureSpec 的大小，因此它在 setMeasureDemention 后设置了 MeasureSpec 才有值，而 getWidth 是 mRight - mLeft，在 layout 中 setFrame 赋值。
 ## onFinishInflate
 在 setContentView 之后 onMeasure 之前调用，代表 view 中的子 view、控件等映射完成（从 xml 解析完毕），可以进行初始化了（如 findView 等获取控件和子 view）  
 setContentView 阶段 decorView 和容纳 layout 的 content 初始化完毕，将 layout 添加到 content（一个 FrameLayout） 中（window.setContentView）
-## invalidate & requestLayout
-invalidate：由于 mLayoutRequested 为 false，不会导致 onMeasure 和 onLayout 被调用，会递归调用父 view 的 invalidateChildInParent（不会调用 root 的 invalidate），通过 dispatchDraw 分发事件，再调用 view 的 draw 方法，最终调用 onDraw（ps：调用 invalidate 后，实际上不影响当前帧，是在下一帧绘制）  
-requestLayout：递归调用父 window 的 requestLayout，不同的是会走 measure 流程，但不一定触发 onDraw（layout 过程 l、t、r、b 变化触发 invalidate，才会走到 onDraw）  
+## invalidate
+## invalidate
+1.只能在主线程调用    
+2.标记View需要重绘（设置dirty标志，invalidate只重绘dirty区域）    
+3.向上传递到ViewRootImpl    
+4.调用scheduleTraversals()    
+5.等下一个VSYNC执行draw    
+6.由于 mLayoutRequested 为 false，不会导致 onMeasure 和 onLayout 被调用，会递归调用父 view 的 invalidateChildInParent（不会调用 root 的 invalidate），通过 dispatchDraw 分发事件，再调用 view 的 draw 方法，最终调用 onDraw  
+7.多次invalidate会合并（同一帧内）
+### postInvalidate
+1.可以在子线程调用  
+2.内部通过Handler发消息到主线程  
+3.主线程收到消息后调用invalidate()
+## requestLayout
+递归调用父 window 的 requestLayout，不同的是会走 measure 流程，但不一定触发 onDraw（layout 过程 l、t、r、b 变化触发 invalidate，才会走到 onDraw）  
 只需要刷新 view 则使用 inva，需要重新 measure 则使用 requestLayout，可以接一个 invalidate 保证重绘
 ## Measure
 1.对于单独的 view 而言，measure 就可以确定大小（宽高）了，已经完成了对整个 view 的测量，但一般针对 viewGroup，还需要进行子 view 的测量  
@@ -59,11 +102,32 @@ UNSPECIFIED + wrap_content：UNSPECIFIED-0
 ## onTouch
 View 有，ViewGroup 没有的回调，需要绑定监听 onTouchListener，优先级高于 onTouchEvent，在返回 false 的情况下才会走 onTouchEvent，view 只有这个和 dispatchTouchEvent
 ## onTouchEvent
-处理 down 事件后，后续所有事件都由自身处理，若不处理则后续事件不会再走到这里，此外，若不处理 up 事件则此次事件会丢失
-## onDispatchTouchEvent
-返回 true 则说明自身处理事件，返回 false 会分发给上层 view 处理
+1.处理 down 事件后（范围true），后续所有事件都由自身处理，若不处理则后续事件不会再走到这里，此外，若不处理 up 事件则此次事件会丢失  
+2.返回 true 则说明自身处理事件，返回 false 会分发给上层 view 处理，层层递进到activity，都不处理则事件丢弃
+## dispatchTouchEvent
+```
+Activity.dispatchTouchEvent()
+    │ 返回false → 事件丢弃
+    ▼
+PhoneWindow.superDispatchTouchEvent()
+    │
+    ▼
+DecorView.dispatchTouchEvent()
+    │
+    ▼
+ViewGroup.dispatchTouchEvent()
+    │
+    ├── onInterceptTouchEvent() 返回true
+    │   → 自己处理，调用onTouchEvent()
+    │
+    └── onInterceptTouchEvent() 返回false
+        → 传给子View
+            子View.dispatchTouchEvent()
+```
 ## onIntercepTouchEvent
 返回 true 为自身处理事件，false 则分发给子 view 处理，viewGroup 独有回调
+### requestDisallowInterceptTouchEvent
+子View需要阻止父ViewGroup拦截事件,如嵌套RecyclerView竖滑屏蔽父View横滑
 ## process
 1.清空异常及已有状态，给所有之前选择的 Target 发送 Cancel 事件，确保之前 Target 能收到完整的事件周期；清除已有T arget，复位所有标志位（如 PFLAG_CANCEL_NEXT_UP_EVENT、FLAG_DISALLOW_INTERCEPT 等）  
 2.首先调用 activity 的 dispatchTouchEvent 分发（activity 只有这个和 onTouchEvent），从 window 分发到 viewGroup，调用 onInterceptTouchEvent 确定当前 ViewGroup 是否拦截 Down 事件，拦截则事件不会传递给子 View，调用 onTouchEvent 本身消费事件；不拦截则遍历所有子 View 寻找是否有子 View 需要消费该事件（调用子 view 的 dispatchTouchEvent）；若有子 View 需要消费该事件，则设定该事件的处理Target 为该子 View；若无子 View 需要消费该事件，则调用 super.dispatchEvent 判断该 ViewGroup 本身是否需要处理该事件  
@@ -121,6 +185,40 @@ mScrapView：还未消失但将要消失
 mCachedView：已经消失，默认大小为2用户指定缓存逻辑  
 RecyclePool：默认大小为5  
 采用差分刷新提高效率：DiffUtil 工具类实现，将新旧数据集传递给 Recyclerview，告知 adapter 哪些改变的数据需要刷新 view，可通过维护一个 list（AsyncListDiffer，异步操作的差分列表，构造传入两个参数，listupdatecallback（重写增删改方法）和 differconfig（重写 areItemsTheSame 和 areContentTheSame，并设置主、子线程 Executor）），向 Recyclerview 提交该列表刷新 view
+## NestedScrolling
+```
+传统事件分发的问题：
+├── 事件只能被一个View消费
+├── 父View拦截后子View收不到事件
+└── 无法实现"子View先滑，滑到头再父View滑"
+
+NestedScrolling机制：
+├── 子View（NestedScrollingChild）
+│   滑动前先问父View：你要消费多少？
+│   父View消费后，剩余的子View自己消费
+│
+└── 父View（NestedScrollingParent）
+    接收子View的询问，决定消费多少
+
+核心方法：
+// 子View滑动前
+child.dispatchNestedPreScroll(dx, dy, consumed, offsetInWindow)
+// consumed[0/1] = 父View消费的x/y
+
+// 子View滑动后（有剩余）
+child.dispatchNestedScroll(
+    dxConsumed, dyConsumed,  // 子View消费的
+    dxUnconsumed, dyUnconsumed,  // 未消费的
+    offsetInWindow
+)
+
+实现案例：
+CoordinatorLayout + AppBarLayout + RecyclerView
+├── RecyclerView向上滑
+├── 先问CoordinatorLayout：你要消费多少？
+├── AppBarLayout折叠（消费部分滑动距离）
+└── 剩余距离RecyclerView自己滚动
+```
 # Animator
 只改变显示位置，内部数据和事件不会改变（需要手动同步）  
 帧动画：播放图片，图片较多/较大容易OOM  
@@ -151,3 +249,36 @@ inflate 线程优先级的问题：使用线程池时需要提高线程优先级
 动画问题：自定义 View 里使用了动画，动画在 start 时会校验是否是 UI 线程主线程，这种情况我们需要去修改业务代码，将相关逻辑移动到后续真正添加到 View tree 时  
 需要使用 Activity context 的场景：一是在 Activity 启动之后再进行异步预加载，但是预加载的并发空间可能会被压缩；二是利用全局 context 进行预加载，但是在 add 到 view tree 之前将 context 替换为 Activity 的，以满足 Dialog 显示、LiveData 使用等场景的需求  
 6.懒加载，如 Kotlin by lazy，在真正要使用 binding 时，才会去 inflate
+# 硬件加速
+```
+硬件加速原理：
+
+软件绘制（无硬件加速）：
+├── Canvas操作直接在Bitmap上绘制像素
+├── CPU执行所有绘制操作
+└── 结果存入Surface Buffer
+
+硬件加速：
+├── Canvas操作被记录为DisplayList
+│   （绘制指令，不是像素）
+├── RenderThread将DisplayList提交给GPU
+├── GPU执行绘制，结果存入Buffer
+└── CPU只负责记录指令，GPU负责执行
+
+优势：
+├── GPU并行处理，速度快
+├── 部分操作（如平移/缩放）不需要重新记录DisplayList
+│   直接修改RenderNode的变换矩阵
+└── 减少CPU负担
+
+不支持硬件加速的操作：
+├── Canvas.drawBitmapMesh()（部分版本）
+├── 某些PorterDuff混合模式
+├── Canvas.clipPath()（API 18以下）
+└── 自定义View中某些Paint操作
+
+层级硬件加速控制：
+Application → Activity → Window → View
+可以单独关闭某个View的硬件加速：
+view.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+```
