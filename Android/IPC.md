@@ -103,12 +103,21 @@ mmap:
 序列化：对象将其状态写入临时（传输时使用）或持久性（持久化处理）存储区域  
 反序列化：重新创建该对象，通过 FileOutPutStream/FileInPutStream 以及 ObjectOutPutStream/ObjectInPutStream 生成和读取二进制文件
 ## Serializable
-编译器会根据类字段自动生成，也可以手动重写来生成 seriaVersionUID，这样即使类结构变化仍可以序列化  
-通过 FileOutPutStream 创建 ObjectOutPutStream，创建 ObjectStramClass 并写入对象信息，类名以及 seriaVersionUID，最后写入对象需要反射解析要序列化的对象来生成 ObjectStreamClass，所以性能不太好，但是写起来方便点    
-加上 transition 关键字的属性不会序列化
+1.编译器会根据类字段自动生成，也可以手动重写来生成 seriaVersionUID，这样即使类结构变化仍可以序列化  
+2.通过 FileOutPutStream 创建 ObjectOutPutStream，创建 ObjectStreamClass 并写入对象信息，类名以及 seriaVersionUID，最后写入对象需要反射解析要序列化的对象来生成 ObjectStreamClass，所以性能不太好，但是写起来方便点    
+3.加上 transition 关键字的属性不会序列化  
+4.产生大量临时对象（GC压力）  
+5.适合：持久化存储（写文件/数据库）
 ## Parcelable
-重写 writeToParcel（用来序列化，将需要序列化的字段写入一个 parcel 对象） 并创建一个 Creator 重写 createFromParcel（反序列化，从 parcel 对象读取数据）  
-Intent 使用的就是 Parcelable，如果传入的数据采用 Serializable 则会进行二次序列化（先序列化为字节数组再写入），所以尽量先统一一下
+1.重写 writeToParcel（用来序列化，将需要序列化的字段写入一个 parcel 对象） 并创建一个 Creator 重写 createFromParcel（反序列化，从 parcel 对象读取数据）  
+2.Intent 使用的就是 Parcelable，如果传入的数据采用 Serializable 则会进行二次序列化（先序列化为字节数组再写入），所以尽量先统一一下  
+3.不产生额外对象  
+4.适合：内存中的IPC传输
+## Parcel
+1.Binder使用的就是这个，直接操作内存（native层），性能好    
+2.只有这个支持Binder对象传递（跨进程传递Binder引用）  
+3.生命周期需要手动管理（recycle()）  
+4.
 # Binder
 ## Foundation
 只需要拷贝一次数据，需要内核支持，采用 Linux 内存映射（mmap，常用在文件等对象的操作，用内存读写代替 IO，在物理介质和用户空间建立映射）方式，将用户空间的内存区域映射到内核空间，两个空间变化都会反应到另一空间，这样可以减少拷贝次数。    
