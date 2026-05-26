@@ -137,8 +137,32 @@ View A和View C不触发onDraw
 
 ├── ViewGroup本身不重绘
 ├──  只负责传递dirty区域
-└── （除非ViewGroup自己也调用了invalidate）
+├── （除非ViewGroup自己也调用了invalidate）
+├──子View调用invalidate()后的完整过程：
 
+├──TextView（子View）调用invalidate()
+    │
+    ▼
+├──dirty区域向上传递到ViewRootImpl
+    │
+    ▼
+├──performDraw()触发
+    │
+    ▼
+├──从DecorView开始往下调用draw()
+    │
+    ├── DecorView.draw()     ← 执行了，但...
+    │       │
+    │   FrameLayout.draw()  ← 执行了，但...
+    │       │
+    │   LinearLayout.draw() ← 执行了，但...
+    │       │
+    │   TextView.draw()     ← 真正重绘！onDraw执行
+    │       │
+    │   Button.draw()       ← 执行了，但...
+    │
+    └── 所有View的draw()都被调用了
+        但只有TextView真正执行了onDraw（dirty区域没有被合并，dirty只能靠invalidate传递给父View）
 
 硬件加速下的优化：
 ├── 每个View有独立的DisplayList
