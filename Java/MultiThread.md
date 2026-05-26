@@ -96,10 +96,25 @@ monitorExit：
 2.保证有序性：  
 禁止指令重排序，JVM会对指令重排序优化性能，volatile变量前后插入内存屏障，禁止跨越屏障的重排序。(比锁开销小)  
 3.不保证原子性：  
+
 ```
 volatile int count = 0;
-count++  // 实际是三步：读→加→写
-         // 多线程下仍然不安全
+count++
+// 实际是三步：读→加→写
+1. 读取count的值（从主内存读到寄存器）
+2. 寄存器值+1
+3. 写回count（写回主内存）
+
+volatile只保证步骤1读到最新值
+步骤2和3之间没有保护，多线程下仍然不安全
+
+如：
+Thread1: 读count=0 → 计算1
+Thread2: 读count=0 → 计算1   ← volatile保证读到0
+Thread1: 写count=1
+Thread2: 写count=1            ← 覆盖了Thread1的结果
+
+所以只能保证是最新的值，但无法保证期间的变动
 ```
 ## 可重入性
 一个线程得到一个对象锁后再次请求该对象锁，是允许的（子类继承父类时，子类也是可以通过可重入锁调用父类的同步方法）
@@ -185,3 +200,38 @@ getAndIncrement：先返回旧值，再自增
 3.破坏不可剥夺：  
 └── 使用tryLock(timeout)  
     超时自动放弃，释放已有锁  
+## 检测
+### 线下
+```
+方案一：jstack命令
+jstack <pid>
+└── 输出所有线程状态
+    Found 1 deadlock:
+    Thread-1 waiting for Thread-2's lock
+    Thread-2 waiting for Thread-1's lock
+
+方案二：Android Studio Profiler
+├── CPU Profiler → Threads视图
+├── 看线程是否长时间处于BLOCKED状态
+└── 点击线程查看等待的锁
+
+方案三：ANR traces.txt
+/data/anr/traces.txt
+└── 死锁通常会导致ANR
+    traces里会显示waiting to lock信息
+```
+### 线上
+```
+方案一：监控锁等待超时
+// 使用tryLock替代synchronized
+if (!lock.tryLock(3, TimeUnit.SECONDS)) {
+    // 3秒没拿到锁，可能死锁
+    // 采集当前线程堆栈上报
+    reportPotentialDeadlock(Thread.currentThread())
+}
+
+方案二：Matrix
+├── WatchDog监控主线程
+├── 检测到卡死时dump所有线程堆栈
+└── 分析BLOCKED线程的锁等待关系
+```
