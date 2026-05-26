@@ -70,6 +70,48 @@ submit(task)
 └── PriorityBlockingQueue：
     按优先级执行，Aurora用到
 ```
+## Run
+```
+run()执行完 → 不会TERMINATED
+└── 因为线程池的线程run()里是一个while循环
+
+线程池Worker的run()源码（简化）：
+class Worker extends Thread {
+    override fun run() {
+        // 不是直接执行你的任务！
+        // 而是一个循环
+        while (true) {
+            val task = workQueue.take()
+            // ↑ 阻塞等待任务队列
+            // 没任务时挂起（不占CPU）
+            // 有任务时被唤醒
+
+            if (task == null) break  // 线程池关闭时退出
+
+            task.run()  // 执行你提交的任务
+            // 执行完继续循环，等待下一个任务
+        }
+        // 走到这里才真正结束
+    }
+}
+
+所以：
+├── 你提交的Runnable.run()执行完
+│   只是task.run()返回了
+│   Worker线程继续while循环
+│   回到workQueue.take()等待
+│   线程状态：WAITING（不是TERMINATED）
+│
+├── 线程永远不会TERMINATED（除非线程池关闭）
+└── 所以线程池能复用线程
+    不需要反复创建销毁
+
+核心线程 vs 非核心线程的区别：
+├── 核心线程：workQueue.take()（永久阻塞等待）
+└── 非核心线程：workQueue.poll(keepAliveTime)
+    超时没有任务 → 返回null → 退出while → TERMINATED
+    这就是keepAliveTime的作用
+```
 # ThreadLocal
 线程本地变量，访问这个变量的每个线程都会有这个变量的一个本地拷贝，多个线程操作这个变量，实际是在操作自己本地内存里面的变量，从而起到线程隔离的作用，避免了并发场景下的线程安全问题，一种空间换时间的方式   
 Thread 线程类有一个类型为 ThreadLocal.ThreadLocalMap 的实例变量 threadLocals，每个线程都有一个自己的 ThreadLocalMap，内部维护了 Entry 数组，每个 Entry 代表一个完整的对象，key 是 ThreadLocal 本身，value 是 ThreadLocal 的泛型对象值，并发多线程场景下，每个线程 Thread，在往 ThreadLocal 里设置值的时候，都是往自己的 ThreadLocalMap 里存，读也是以某个 ThreadLocal 作为引用，在自己的 map 里找对应的 key，从而可以实现了线程隔离  
