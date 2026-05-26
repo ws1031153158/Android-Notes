@@ -69,7 +69,12 @@ view.invalidate()
     │
     ▼
 View.invalidateInternal(
-    left, top, right, bottom,  // dirty区域坐标
+    l = 0,
+    t = 0,
+    r = mRight - mLeft,   // View自身的宽
+    b = mBottom - mTop,   // View自身的高
+    // dirty区域 = View自身的bounds（整个View）       ----->        mLeft/mTop/mRight/mBottom 是View在父容器中的位置,layout阶段确定
+    // 无参invalidate = 整个View都是dirty            ----->        dirty区域初始 = (0, 0, width, height),相对于View自身的坐标系
     invalidateCache, fullInvalidate
 )
     │
@@ -89,6 +94,18 @@ ViewRootImpl.invalidateChildInParent(dirty)
     ├── 合并到mDirty（总的dirty区域）
     └── scheduleTraversals()
         触发下一帧重绘
+
+最终到ViewRootImpl：
+├── dirty已经转换为屏幕坐标
+├── 合并到mDirty（总dirty区域）
+└── 下一帧只重绘mDirty区域
+
+有参invalidate（局部刷新）：
+// 只刷新View内部的某个区域
+view.invalidate(left, top, right, bottom)
+    └── dirty区域 = 传入的矩形
+        比整个View更小
+        性能更好
 
 绘制时如何利用dirty区域：
 
