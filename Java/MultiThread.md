@@ -5,6 +5,24 @@ new Thread  新建线程对象
 ThreadPool：可控制并发条件，一般是通过 Executor 来构建的，也可获取系统的线程池使用  
 线程优先级和属性会被继承，线程优先级和属性和开启他的线程的相同（父子关系）  
 start 开启线程，无需主动 run（jvm 会调，主动调则相当于调了两次，也会执行两次）  ，join 用于等待其他线程执行结束（如 A 调用 B 的 join，A 进入等待状态直到 B 结束），start 会开启一个新的线程，调用 run 也还是在当前线程，会阻塞
+# Run
+```
+Thread生命周期：
+NEW → RUNNABLE → RUNNING → TERMINATED
+
+run()执行完：
+├── 线程进入TERMINATED状态
+├── 线程对象本身还在堆内存中
+│   只要有引用持有它，就不会被GC
+├── 但线程的native资源（栈内存等）已释放
+└── 不能再start()，会抛IllegalStateException
+
+所以：
+├── run执行完 = 线程工作结束
+├── 线程对象是否被回收 = 取决于是否还有引用
+└── 没有引用 → GC时回收线程对象
+    有引用（如线程池持有）→ 不被回收
+```
 # ThreadPool
 一般是通过 Executor 来构建的（顶级接口是 Executor，但其只是工具，真正接口是 ExecutorService），也可获取系统的线程池使用。  
 1.减少了创建和销毁线程的次数，每个工作线程都可以被重复利用，可执行多个任务。  
