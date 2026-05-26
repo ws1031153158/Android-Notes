@@ -46,14 +46,65 @@ Looper.prepare 加上 Looper.loop（执行轮询，死循环，MessageQueue.next
 ![image](https://github.com/user-attachments/assets/507e0233-8679-4376-94cc-0817cc25b620)    
 发送一个特殊消息作为屏障消息，当消息队列检测到后，从这个消息开始，遍历后续的消息，只处理其中被标记为“异步”的消息
 ### 消息种类
-同步：异步之外都属于同步，屏障消息也是特殊的同步消息（tartget == null）  
-异步：标记为 asynchronous 的消息，正常来讲，在出现同步屏障之前，同步异步没有本质区别
+同步：异步之外都属于同步，屏障消息也是特殊的同步消息（target == null,正常消息的target就是发消息的Handler）  
+异步：标记为 asynchronous 的消息，正常来讲，在出现同步屏障之前，同步异步没有本质区别  
+```
+Message结构：
+public final class Message {
+    Handler target;      // 处理这条消息的Handler
+    Runnable callback;   // 如果是post(Runnable)方式
+    int what;            // 消息类型
+    long when;           // 执行时间
+    Message next;        // 链表下一个
+}
+
+发送消息时：
+handler.sendMessage(msg)
+    └── msg.target = this（handler本身）
+
+MessageQueue.next()处理时：
+msg.target.dispatchMessage(msg)
+    └── 调用对应Handler的handleMessage
+```
 ### 处理流程
 #### 发送屏障消息
 MessageQueue.postSyncBarrier，将同步屏障按照 when 大小（也就是时间顺序）放入消息队列，同时返回一个 token 用于移除
 #### 发送异步消息
 1.使用异步类型的 Handler 发送的全部 Message 都是异步的，Handler 有一系列带 Boolean 类型的参数的构造器，决定是否是异步，在发送消息的时候就会给 Message 赋值   
-2.给 Message 标志异步，setAsynchronous 设为 true  
+2.给 Message 标志异步，setAsynchronous 设为 true    
+3.没有同步屏障时，同步/异步消息完全没有区别  
+```
+MessageQueue.next()源码逻辑：
+
+Message next() {
+    for (;;) {
+        // 取队列头部消息
+        Message msg = mMessages;
+
+        // 没有屏障时：直接按时间顺序取消息
+        // 不管是同步还是异步，一视同仁
+
+        if (msg != null && now < msg.when) {
+            // 还没到执行时间，等待
+        } else if (msg != null) {
+            // 取出执行，不区分同步/异步
+            return msg;
+        }
+    }
+}
+
+只有遇到屏障（target==null）时：
+才会区分同步/异步
+    └── 跳过同步消息
+    └── 优先取异步消息
+
+isAsynchronous标志：
+├── Message.setAsynchronous(true)
+├── 或Handler构造时传async=true
+│   所有通过该Handler发的消息都是异步
+└── Choreographer的Handler就是async=true
+    保证VSYNC回调不被屏障阻塞
+```
 #### 处理消息  
 和正常处理一样，MessageQueue.next 读取消息，此外，还在这里做了同步屏障的相关判断  
 在 next 无限循环中，首先是 nativePollOnce 阻塞，然后是取消息的同步代码块（使用 synchronized ），首先取消息队列的头部消息（mMessages），如果是屏障消息（target == null），则寻找队列中的异步消息进行处理，否则直接处理这条头部消息  
