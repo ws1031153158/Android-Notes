@@ -135,6 +135,11 @@ draw(canvas)
 只重绘dirty区域内的内容
 View A和View C不触发onDraw
 
+├── ViewGroup本身不重绘
+├──  只负责传递dirty区域
+└── （除非ViewGroup自己也调用了invalidate）
+
+
 硬件加速下的优化：
 ├── 每个View有独立的DisplayList
 ├── 只有dirty的View重新录制DisplayList
