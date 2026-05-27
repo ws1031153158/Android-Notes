@@ -277,3 +277,25 @@ if (!lock.tryLock(3, TimeUnit.SECONDS)) {
 ├── 检测到卡死时dump所有线程堆栈
 └── 分析BLOCKED线程的锁等待关系
 ```
+# 锁选择
+1.简单无锁、高速交替 → yield + volatile：  
+两个线程交替执行   
+无锁、高速、简单   
+不需要阻塞，只需要轮流执行  
+
+2.需要等待唤醒、释放锁 → wait/notify：  
+必须释放锁   
+线程之间要 “通知” 对方  
+生产者消费者模型   
+必须配合 synchronized  
+
+3.高级锁、可重入、可中断 → ReentrantLock：  
+需要高级功能tryLock()   
+lockInterruptibly()   
+公平锁   
+需要手动解锁   
+
+4.必须等 N 个线程完成 → CountDownLatch：  
+必须等 N 个线程按序执行完   
+按序打印：1→2→3   
+主线程等子线程  
