@@ -2,11 +2,66 @@
 1.以键值对形式存储数据（存为 xml 文件），一般用来存放各种参数（如 boolean 值、字符串等），记录某种状态或参数数值  
 2.apply 没有返回值，提交到内存，然后异步提交到硬盘，并覆盖上一次内存的值  
 3.commit 返回值标识是否成功，同步提交到硬盘  
+4.SP 底层是基于内存缓存 + 文件存储（XML），默认不支持跨进程（每个进程会有自己的内存缓存，修改不会立刻同步到其他进程）  
+5.ContentProvider：封装 SP 读写，通过 Binder IPC 实现跨进程实时同步  
+```
+所有对 Provider 的访问都是通过 Binder IPC 完成
+把 SharedPreferences 的读写逻辑封装在 ContentProvider 里，就可以让多个进程通过 IPC 实时访问同一份数据，而不是各自的内存缓存
+
+public class SPCrossProcessProvider extends ContentProvider {
+    @Override
+    public boolean onCreate() {
+        return true;
+    }
+
+    @Override
+    public Cursor query(Uri uri, String[] projection, String selection,
+                        String[] selectionArgs, String sortOrder) {
+        String key = selectionArgs[0];
+        String value = getContext().getSharedPreferences("cross_sp", MODE_PRIVATE)
+                .getString(key, null);
+        MatrixCursor cursor = new MatrixCursor(new String[]{"value"});
+        cursor.addRow(new Object[]{value});
+        return cursor;
+    }
+
+    @Override
+    public Uri insert(Uri uri, ContentValues values) {
+        String key = values.getAsString("key");
+        String value = values.getAsString("value");
+        getContext().getSharedPreferences("cross_sp", MODE_PRIVATE)
+                .edit().putString(key, value).apply();
+        return uri;
+    }
+}
+
+
+// 读取
+Cursor cursor = getContentResolver().query(
+    Uri.parse("content://com.example.sp_provider/read"),
+    null, null, new String[]{"user_token"}, null
+);
+if (cursor != null && cursor.moveToFirst()) {
+    String token = cursor.getString(0);
+    cursor.close();
+}
+
+// 写入
+ContentValues values = new ContentValues();
+values.put("key", "user_token");
+values.put("value", "abc123");
+getContentResolver().insert(
+    Uri.parse("content://com.example.sp_provider/write"), values
+);
+```
 
 sharedPreferences 是一个 xml 的读取和存储操作，在使用前都会调用 getSharedPreferences 方法，这时它会去异步加载文件当中的配置文件，load 到内存当中，调用 get 或 put 属性时，如果 load 内存的操作没有执行完成，那么就会一直阻塞进行等待，都是拿同一把锁，它既然是 IO 操作，如果这文件存在很久，这个时间就会很长,如果项目比较大，有几十个类使用 SharedPreferences 文件，里面的文件也非常多   
 1.在 Application 中 MultiDex 之前加载 SharedPreferences（如果其他类在 Multidex 之前加载进行操作，会因为一些类不在主 dex 当中，导致崩溃，Sharedpreferences 是系统类，不会报错）   
-2.创建 SharedPreferences 并且保存到 Map 中，那么需要的时候可以在 SP_MAP 中直接获取
-## ANR
+2.创建 SharedPreferences 并且保存到 Map 中，那么需要的时候可以在 SP_MAP 中直接获取    
+3.第一次调用 getSharedPreferences() 会从磁盘 XML 文件加载到内存（HashMap 缓存），后续读取都是直接从内存缓存读，不会每次都读文件  
+4.apply()：先写到内存缓存，然后异步写到磁盘文件（可能延迟几百毫秒）  
+5.commit()：写到内存缓存并同步写到磁盘文件（阻塞当前线程）
+## ANR  
 sp 只适合轻量级数据的存储，适合少量数据的持久化，存在 I/O 瓶颈，每次写入都是整个文件重新写入，不是增量写入，如果读写操作慢，就有可能导致 ANR   
 1.在 UI 线程中调用 getXXX 或 edit() 方法 （第一次调用 getSharedPreferences() 后）   
 2.用 apply 方法提交修改（内部是用一个单线程的线程池实现），当 Activity 的 onPause/onStop 等方法被调用时    
