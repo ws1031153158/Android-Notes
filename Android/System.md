@@ -343,6 +343,28 @@ Ztgote fork 出PMS 进程，在 PMS 的 main 函数中完成初始化加载。
 4.更新系统状态以及 PMS 中的内存数据  
 5.返回结果通知 UI 变化（如一些 onPackageChange 等回调）
 # Activity
+## Instrumentation
+由 ActivityThread 创建并持有（mInstrumentation），负责 创建Activity实例，管理Activity生命周期  
+```
+生命周期：
+newActivity(ClassLoader cl, String className, Intent intent)
+创建 Activity 实例
+callActivityOnCreate(Activity activity, Bundle icicle)
+调用 Activity 的 onCreate()
+callActivityOnResume(Activity activity)
+调用 Activity 的 onResume()
+callActivityOnPause(Activity activity)
+调用 Activity 的 onPause()
+// 常用于：
+// 1.记录时间戳，分析 Activity 启动阶段耗时
+// 2.在生命周期开始前插入任务调度逻辑
+
+启动组件：
+execStartActivity(...)
+启动新的 Activity（内部调用 ActivityManagerService）
+
+
+```
 ## Launch Launcher
 1.Zygote fork 出进程（其实 AMS\PMS\WMS 都是这样子），在 AMS 中调用 systemReady  
 2.ActivityTaskManagerInternal 调用 startHomeActivity 会拉起 Launcher  
