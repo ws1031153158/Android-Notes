@@ -139,6 +139,39 @@ Server用户空间 和 内核空间
 ```
 
 Binder 作为独立模块，通过内存映射，运行时被链接到内核作为内核的一部分运行（Linux 动态内核可加载模块）
+## 拷贝
+```
+普通 IPC（如 Socket、管道）
+两次拷贝：
+发送进程 → 内核缓冲区（用户态 → 内核态）
+内核缓冲区 → 接收进程（内核态 → 用户态）
+
+Binder 优化：
+Binder 驱动在内核中为 接收进程 预先分配一块连续的内存（Binder Buffer）
+发送数据时：
+发送进程将数据 一次性拷贝 到这块内核缓冲区。
+接收进程通过内存映射（mmap）直接访问这块缓冲区，不需要再拷贝到用户空间。
+所以是 一次拷贝：发送进程用户空间 → 接收进程的内核缓冲区
+
+无法0拷贝：
+1.安全隔离
+Linux 进程地址空间隔离，用户态不能直接访问其他进程的内存
+如果让发送进程直接映射接收进程的缓冲区：
+发送方可以在任何时间修改接收方的数据（数据篡改风险）
+无法保证数据一致性（接收方还没读完，发送方就改了）
+
+2.生命周期管理
+Binder Buffer 属于接收进程，由 Binder 驱动分配和回收
+如果发送进程直接写这块内存，驱动无法精确控制数据何时写完、何时可读、何时释放
+可能出现：
+发送方写到一半崩溃 → 接收方读到脏数据
+接收方释放缓冲区 → 发送方还在写（悬空指针）
+
+3. 数据一致性与同步
+0 拷贝需要复杂的同步机制（锁、信号量）来保证写入和读取的时序
+Binder 的设计目标是“消息传递 + 内存安全”，不是共享内存
+如果要 0 拷贝，应该用 Ashmem / SharedMemory 这种共享内存机制，而不是 Binder
+```
 ## Connection
 1.Binder 驱动在内核空间开辟出一个缓存区，建立缓存区和用户空间地址的映射关系  
 2.发送进程将数据 copy 到内核中的缓存区，映射的存在相当于把数据发送到了接收进程的用户空间
@@ -285,6 +318,47 @@ Server处理：
     处理请求1 → 处理请求2 → 处理请求3
     严格按顺序，不并发
 ```
+## oneway
+AIDL 接口方法声明前的关键字，表示这个方法是 单向异步调用  
+调用方（Client）不会等待 服务端（Server）执行完成，立即返回  
+非阻塞，对应的是 Binder 的 ASYNC_TRANSACTION 模式  
+
+注意：  
+不能有返回值（必须是 void 方法）  
+不能抛异常（AIDL 语法限制）  
+参数会立即拷贝到 Binder 驱动缓冲区，然后方法返回  
+服务端方法会在 Binder 线程池中异步执行  
+
+```
+// 定义
+interface IMyService {
+    oneway void sendLog(String log);
+}
+
+// 编译生成
+public interface IMyService extends android.os.IInterface {
+    public void sendLog(String log) throws android.os.RemoteException;
+}
+
+// 调用方
+myService.sendLog("User clicked button"); // 立即返回
+
+// 服务端
+@Override
+public void sendLog(String log) {
+    // 异步执行
+    Log.d("IMyService", "Log: " + log);
+}
+```
+
+不适合：  
+1.需要返回结果  
+2.需要保证顺序（异步可能乱序）
+
+原理：  
+Binder 默认是同步调用（Client 线程阻塞，等待 Server 处理完成并返回结果）  
+异步队列：oneway 事务进入 async_todo，普通事务进入 todo  
+线程池：Server 进程的 Binder 线程池会同时处理同步和异步事务，但异步事务不会阻塞调用方  
 ## 完整流程
 1.准备阶段（Server启动时）：  
 ```
