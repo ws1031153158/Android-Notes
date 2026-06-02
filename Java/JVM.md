@@ -255,6 +255,11 @@ abstract class TimingClassVisitorFactory
     }
 }
 ```
+## 对比 Javassist
+```
+<img width="1588" height="984" alt="2c70d1213b0a70d9f4e8d36d70e19f4f" src="https://github.com/user-attachments/assets/244f2d84-95d8-4a6a-b132-fdd700045f80" />
+
+```
 # 类加载
 ## 类加载机制
 加载过程为：加载 -> 链接（验证 -> 准备 -> 解析 -> 符号引用） -> 初始化 （-> 卸载）  。  
