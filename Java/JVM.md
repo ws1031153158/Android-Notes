@@ -257,7 +257,7 @@ abstract class TimingClassVisitorFactory
 ```
 ## 对比 Javassist
 ```
-<img width="1588" height="984" alt="2c70d1213b0a70d9f4e8d36d70e19f4f" src="https://github.com/user-attachments/assets/244f2d84-95d8-4a6a-b132-fdd700045f80" />
+<img width="2812" height="1754" alt="7ffc8cf6ff65b66240457b22953bf7de" src="https://github.com/user-attachments/assets/d6a6b409-26a0-4b23-b66b-dbee5e0506ac" />
 
 ```
 # 类加载
