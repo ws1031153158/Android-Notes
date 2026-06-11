@@ -73,6 +73,49 @@ Looper.prepare 加上 Looper.loop（执行轮询，死循环，MessageQueue.next
 Message msg = queue.next();
 msg.target.dispatchMessage(msg);
 ```
+## postDelay
+用于将一个任务（Runnable）延迟指定时间后执行  
+原理：  
+1.将 Runnable 封装成 Message  
+2.设置 Message 的执行时间（when）  
+3.把 Message 插入到 MessageQueue 的时间优先队列中  
+4.Looper 在循环中检查队列，只有到达执行时间才会取出并执行  
+
+```
+// 延迟发送
+public boolean postDelayed(Runnable r, long delayMillis) {
+    return sendMessageDelayed(getPostMessage(r), delayMillis);
+}
+
+// 将 runnable 设为 message 的 callback
+    private static Message getPostMessage(Runnable r) {
+        Message m = Message.obtain();
+        m.callback = r;
+        return m;
+    }
+
+// send at time
+    public final boolean sendMessageDelayed(@NonNull Message msg, long delayMillis) {
+        if (delayMillis < 0) {
+            delayMillis = 0;
+        }
+        return sendMessageAtTime(msg, SystemClock.uptimeMillis() + delayMillis);
+    }
+
+// 根据 when 判断是否入队
+boolean enqueueMessage(Message msg, long when) {
+    Message p = mMessages;
+    if (p == null || when < p.when) {
+        msg.next = p;
+        mMessages = msg;
+        mHandler.sendMessageAtTime(msg, when);
+        // 唤醒阻塞的 Looper
+        nativeWake(mPtr);
+        return true;
+    }
+    // 插入到合适的位置（按执行时间排序）
+}
+```
 ## Callback
 Handler 的消息有两种处理方式：  
 1.Handler 的 handleMessage(Message msg)  
