@@ -45,6 +45,22 @@ fun draw(canvas: Canvas) {
     view.setLayerType(LAYER_TYPE_HARDWARE, null)
     避免每帧重新绘制
 ```
+## onPreDraw
+```
+ViewRootImpl.scheduleTraversals()
+    → Choreographer.postCallback(TRAVERSAL)
+        → VSYNC信号到来
+            → ViewRootImpl.doTraversal()
+                → performTraversals()
+                    → measure() → layout()
+                        → performDraw()
+                            → ViewTreeObserver.dispatchOnPreDraw()
+                                ← 所有OnPreDrawListener回调
+                                    如果任一返回false → cancelDraw = true
+                    ← cancelDraw=true → 跳过draw，重新post Traversal
+
+   关键：onPreDraw() 在 measure/layout 之后、draw 之前执行，返回 false 会取消本次 draw 并在下一个 VSYNC 重试，直到返回 true。整个过程不阻塞主线程（每次都快速返回 false，仅跳过 draw）
+```
 ## getWidth/getHeight/getMeasureWidth
 setContentView 在 onCreate 时执行，addView 在 onResume 时执行，所以这两个阶段无法获取宽高，可以通过 view.post 来拿。  
 getMeasureWidth 返回 MeasureSpec 的大小，因此它在 setMeasureDemention 后设置了 MeasureSpec 才有值，而 getWidth 是 mRight - mLeft，在 layout 中 setFrame 赋值。
