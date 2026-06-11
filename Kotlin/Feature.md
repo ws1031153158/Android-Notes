@@ -934,8 +934,8 @@ repeatOnLifecycle的原理：
 ### Tips
 1.flow 是冷流，当观察者开始订阅时，才触发 emit（每次 collect 都重新执行生产逻辑，没有 collect 就不生产），rxJava 是一旦数据产生就会推送给所有观察者。  
 2.可以使用 buffer 操作符添加缓存区，配合 onEach 进行流的中间处理，此外还可使用 conflate 保证只传递最新数据，来尽量避免背压。  
-3.StateFlow 是单一值状态 Flow，主要用于处理单一状态的场景，如 ViewModel 中 UI 状态。而 SharedFlow 允许有多个订阅者，并能缓存一定数量的最新元素，适用于多个订阅者需要获取历史元素的场景。如果只关心最新状态，StateFlow 更合适，如果需要获取历史元素，或者存在多个订阅者，可使用 SharedFlow。  
-4.StateFlow 是热流（sharedFlow 的特化版本，始终有一个当前值，只有值变化时才通知（去重）），本身并没有对线程的调度进行限制，因此在多线程环境中，需要在合适的协程上下文中使用 StateFlow。通常建议在主线程上更新 StateFlow，以确保 UI 的线程安全性。在不同协程中更新 StateFlow 可能会导致竞态条件，因此需要确保在更新 StateFlow 时使用适当的同步机制，如 Mutex，确保在不同协程中更新 StateFlow 时的同步性，可以有效避免竞态条件（Mutex.withLock）。    
+3.StateFlow 是单一值状态 Flow，主要用于处理单一状态的场景，如 ViewModel 中 UI 状态。而 SharedFlow 能缓存一定数量的最新元素，适用于多个订阅者需要获取历史元素的场景（replay 定义最近N条数据）。如果只关心最新状态，StateFlow 更合适，如果需要获取历史元素，可使用 SharedFlow。  
+4.StateFlow 是热流（sharedFlow 的特化版本，始终有一个当前值，只有值变化时才通知（去重），新订阅会收到当前最新值），本身并没有对线程的调度进行限制，因此在多线程环境中，需要在合适的协程上下文中使用 StateFlow。通常建议在主线程上更新 StateFlow，以确保 UI 的线程安全性。在不同协程中更新 StateFlow 可能会导致竞态条件，因此需要确保在更新 StateFlow 时使用适当的同步机制，如 Mutex，确保在不同协程中更新 StateFlow 时的同步性，可以有效避免竞态条件（Mutex.withLock）。    
 5.SharedFlow 是热流，在订阅者加入后开始产生事件，（不管有没有 collect，都可以发射，多个 collector 共享同一个流），因此可能存在热启动问题，即在订阅前产生的事件会被忽略。为了解决这个问题，可以使用 stateIn 操作符来创建一个 StateFlow，并在需要时将其转换为 SharedFlow，通过使用 stateIn 的 SharingStarted.Eagerly 参数，可以确保在订阅者加入前就开始产生事件，避免热启动问题。
 ## Cover
 1. Kotlin-JVM 中所谓的协程是假协程，本质上还是一套基于原 生Java Thread API 的封装。和 Go 中的协程完全不是一个东西，不要混淆,更谈不上什么性能更好。
