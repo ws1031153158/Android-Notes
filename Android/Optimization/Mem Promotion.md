@@ -386,9 +386,14 @@ fun badThreadUsage() {
 }
 
 // ✅ 使用线程池，限制线程数量
+// 线程数 = CPU核心数 / (1 - 阻塞比例)
+// 阻塞比例：线程等待IO或锁的时间占总时间的百分比
 object ThreadPoolManager {
 
     // IO 密集型：线程数 = CPU核心数 * 2
+    // IO操作会导致线程阻塞（等待网络、磁盘等）
+    // 阻塞期间CPU可以调度其他线程执行
+    // 多加两个线程（核心数+2）可以在更多线程阻塞时保持CPU忙碌
     val ioExecutor: ExecutorService = ThreadPoolExecutor(
         2,                          // 核心线程数
         Runtime.getRuntime().availableProcessors() * 2, // 最大线程数
@@ -402,6 +407,9 @@ object ThreadPoolManager {
     )
 
     // CPU 密集型：线程数 = CPU核心数 + 1
+    // CPU密集型任务几乎不等待IO，线程一旦运行就会占用CPU
+    // 如果线程数等于核心数，CPU利用率是满的，但一旦有线程因某些原因阻塞（比如等待锁），CPU就会有空闲
+    // 多加一个线程（核心数+1）可以在阻塞时填补空闲，提升利用率
     val cpuExecutor: ExecutorService = ThreadPoolExecutor(
         Runtime.getRuntime().availableProcessors() + 1,
         Runtime.getRuntime().availableProcessors() + 1,
